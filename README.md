@@ -1,5 +1,8 @@
 # ZipGallery
 
+[![Release](https://img.shields.io/github/v/release/maxxNcode/zipgallery?include_prereleases&label=latest)](https://github.com/maxxNcode/zipgallery/releases)
+[![License](https://img.shields.io/github/license/maxxNcode/zipgallery)](LICENSE)
+
 Browse images and videos inside ZIP, 7Z, and TAR archives seamlessly — just like a gallery app.
 
 ## Features
@@ -17,13 +20,9 @@ Browse images and videos inside ZIP, 7Z, and TAR archives seamlessly — just li
 - Supports all common image formats (JPEG, PNG, WebP, GIF, BMP, HEIC, HEIF)
 - Supports all common video formats (MP4, MKV, WebM, AVI, 3GP, MOV)
 
-## Screenshots
-
-*(Add screenshots here)*
-
 ## Download
 
-[Latest APK](https://github.com/maxxNcode/zipgallery/releases)
+[![Download APK](https://img.shields.io/badge/Download-v2.0.0--beta-blue?logo=android)](https://github.com/maxxNcode/zipgallery/releases/tag/v2.0.0-beta)
 
 ## Building
 
