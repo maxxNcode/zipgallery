@@ -1,0 +1,41 @@
+# APK at project root
+/ZipGallery.apk
+*.apk
+*.aab
+
+# Android build output
+app/build/
+build/
+.gradle/
+local.properties
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Gradle wrapper binary
+gradle/wrapper/gradle-wrapper.jar
+
+# OS
+Thumbs.db
+*.swp
+*.swo
+
+# Kotlin
+*.class
+
+# Environment
+.env
+*.keystore
+key.properties
+
+# Local JDK (development environment, not source)
+.jdk/
+
+# Build artifacts
+build.log
+build.ps1
+
+# Docs/plans
+docs/
