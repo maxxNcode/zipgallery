@@ -307,15 +307,26 @@ private fun MediaGrid(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        items(items, span = { item ->
-            if (item is GridItem.Header) GridItemSpan(maxLineSpan)
-            else GridItemSpan(1)
-        }, key = { item ->
-            when (item) {
-                is GridItem.Header -> "header_${item.type.name}"
-                is GridItem.Media -> item.entry.path
+        items(
+            items,
+            span = { item ->
+                if (item is GridItem.Header) GridItemSpan(maxLineSpan)
+                else GridItemSpan(1)
+            },
+            key = { item ->
+                when (item) {
+                    is GridItem.Header -> "header_${item.type.name}"
+                    is GridItem.Media -> item.entry.path
+                }
+            },
+            // Headers span the full row and have a totally different layout
+            // from media cells. Without a distinct contentType, LazyVerticalGrid
+            // can't recycle the item node across types during fast flings and
+            // rebuilds layouts on every scroll pass.
+            contentType = { item ->
+                if (item is GridItem.Header) "header" else "media"
             }
-        }) { item ->
+        ) { item ->
             when (item) {
                 is GridItem.Header -> SectionHeader(item.type, item.count)
                 is GridItem.Media -> MediaThumbnail(

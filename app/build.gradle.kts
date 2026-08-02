@@ -29,6 +29,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Sign release builds with the debug keystore so the optimized
+            // (R8/minified) APK can be installed for performance benchmarking.
+            // Swap for a real signing config before publishing to a store.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
