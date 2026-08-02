@@ -29,8 +29,8 @@ import com.zipgallery.app.model.SortType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.yield
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 class GalleryViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -43,8 +43,10 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     private var tempArchiveFile: File? = null
     private var archivePassword: String? = null
     private var currentFormat: ArchiveFormat = ArchiveFormat.UNKNOWN
-    private val extractedCache = mutableMapOf<String, File>()
-    private val thumbnailCache = mutableMapOf<String, File>()
+    // Concurrent maps: thumbnail requests fire from many IO coroutines (grid
+    // cells + viewer) at once, so plain mutable maps could corrupt under race.
+    private val extractedCache = ConcurrentHashMap<String, File>()
+    private val thumbnailCache = ConcurrentHashMap<String, File>()
 
     private val zipReader: ArchiveReader = Zip4jReader()
     private val compressReader: ArchiveReader = CommonsCompressReader()
@@ -184,7 +186,6 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                         viewerIndex = 0
                     )
                     viewerIndex = 0
-                    pregenerateThumbnails(entries)
                 },
                 onFailure = { e ->
                     when (e) {
@@ -216,15 +217,6 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     fun dismissPasswordDialog() {
         state = state.copy(showPasswordDialog = false, passwordError = null)
-    }
-
-    private fun pregenerateThumbnails(entries: List<MediaEntry>) {
-        viewModelScope.launch(Dispatchers.IO) {
-            entries.forEach { entry ->
-                getThumbnailFile(entry)
-                yield()
-            }
-        }
     }
 
     suspend fun getExtractedFile(entry: MediaEntry): File? = withContext(Dispatchers.IO) {
@@ -264,8 +256,10 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 }
                 val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeFile(extracted.absolutePath, options)
-                val targetSize = 512
-                options.inSampleSize = calculateInSampleSize(options, targetSize, targetSize)
+                options.inSampleSize = calculateInSampleSize(options, THUMB_SIZE, THUMB_SIZE)
+                // RGB_565 halves memory vs ARGB_8888; plenty for a grid cell and
+                // avoids the alpha channel, which we don't need for a JPEG thumb.
+                options.inPreferredConfig = Bitmap.Config.RGB_565
                 options.inJustDecodeBounds = false
                 val bmp = BitmapFactory.decodeFile(extracted.absolutePath, options)
                 if (bmp != null) {
@@ -274,7 +268,10 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                     thumbnailCache[entry.path] = thumbFile
                     return@withContext thumbFile
                 }
-                extracted
+                // Decode failed — return null so the grid shows its placeholder
+                // instead of handing Coil the full-resolution file (which would
+                // decode 100% quality and lag the UI).
+                null
             }
 
             MediaType.VIDEO -> {
@@ -288,7 +285,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                     retriever.setDataSource(extracted.absolutePath)
                     val frame = retriever.frameAtTime
                     if (frame != null) {
-                        val scaled = Bitmap.createScaledBitmap(frame, 512, 512, true)
+                        val scaled = Bitmap.createScaledBitmap(frame, THUMB_SIZE, THUMB_SIZE, true)
                         scaled.compress(Bitmap.CompressFormat.JPEG, 80, thumbFile.outputStream())
                         scaled.recycle()
                         frame.recycle()
@@ -301,7 +298,8 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                     thumbnailCache[entry.path] = thumbFile
                     thumbFile
                 } else {
-                    extracted
+                    // No frame captured — never fall back to the full video file.
+                    null
                 }
             }
         }
@@ -394,6 +392,13 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     companion object {
+        /**
+         * Thumbnail edge length in px — plenty for a ~120dp grid cell. Shared
+         * with the UI so Coil's decode request always matches the generated
+         * thumbnails (no upscaling or accidental full-res re-decodes).
+         */
+        const val THUMB_SIZE = 256
+
         private val IMAGE_EXTS = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif")
         private val VIDEO_EXTS = setOf("mp4", "mkv", "webm", "avi", "3gp", "mov", "ts", "m4v")
 

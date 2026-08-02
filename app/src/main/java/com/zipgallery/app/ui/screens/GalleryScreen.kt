@@ -463,7 +463,10 @@ private fun MediaThumbnail(
             AsyncImage(
                 model = ImageRequest.Builder(LocalContext.current)
                     .data(thumbnailFile)
-                    .size(Size(512, 512))
+                    // Decode at the thumbnail's own size — never upscale or
+                    // re-decode the full-resolution file, keeping scrolls smooth.
+                    .size(Size(GalleryViewModel.THUMB_SIZE, GalleryViewModel.THUMB_SIZE))
+                    .memoryCacheKey(entry.path)
                     .crossfade(true)
                     .build(),
                 contentDescription = entry.name,
