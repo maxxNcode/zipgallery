@@ -72,13 +72,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.size.Size
@@ -251,10 +251,12 @@ private fun GallerySearchBar(
     onQueryChange: (String) -> Unit,
     onClose: () -> Unit
 ) {
+    val keyboardController = LocalSoftwareKeyboardController.current
+
     SearchBar(
         query = query,
         onQueryChange = onQueryChange,
-        onSearch = {},
+        onSearch = { keyboardController?.hide() },
         active = false,
         onActiveChange = {},
         placeholder = { Text("Search files...") },
@@ -491,7 +493,7 @@ private fun MediaThumbnail(
             Text(
                 text = entry.name,
                 color = Color.White,
-                fontSize = 11.sp,
+                style = MaterialTheme.typography.labelSmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )

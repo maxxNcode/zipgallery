@@ -131,7 +131,7 @@ fun MainScreen(
                 Text(
                     text = "ZIP  ·  RAR  ·  7Z  ·  TAR",
                     style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }

@@ -79,6 +79,9 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material3:material3-window-size-class")
     implementation("androidx.compose.material:material-icons-extended")
+
+    // XML Material 3 DayNight window theme (pre-Compose launch window + splash).
+    implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.compose.foundation:foundation")
 
     implementation("io.coil-kt:coil-compose:2.5.0")
@@ -96,4 +99,11 @@ dependencies {
     testImplementation("org.mockito.kotlin:mockito-kotlin:5.2.1")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
     testImplementation("androidx.arch.core:core-testing:2.2.0")
+
+    // Instrumented Compose UI tests (run on a device/emulator via connectedAndroidTest).
+    androidTestImplementation(platform(composeBom))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
+    androidTestImplementation("androidx.test:runner:1.5.2")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

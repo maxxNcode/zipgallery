@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.ZipGallery" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:windowBackground">@android:color/black</item>
-    </style>
+    <!-- Pre-Compose window theme. Compose themes the UI fully after the first
+         frame, so this only governs the brief launch window (and the system
+         splash screen on Android 12+). Using the Material 3 DayNight theme
+         keeps that window in sync with light/dark mode with M3 surface
+         colors, instead of flashing the old forced black background. -->
+    <style name="Theme.ZipGallery" parent="Theme.Material3.DayNight.NoActionBar" />
 </resources>

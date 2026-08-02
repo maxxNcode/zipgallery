@@ -11,19 +11,21 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -37,7 +39,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -47,6 +48,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
@@ -120,7 +122,6 @@ fun ViewerContent(
     }
 
     var currentEntry by remember { mutableStateOf(entries.getOrNull(initialIndex)) }
-    var showUi by remember { mutableStateOf(true) }
 
     LaunchedEffect(pagerState.currentPage) {
         currentEntry = entries.getOrNull(pagerState.currentPage)
@@ -137,119 +138,220 @@ fun ViewerContent(
         }
     }
 
-    val topInset = if (applyInsets) Modifier.statusBarsPadding() else Modifier
-    val bottomInset = if (applyInsets) Modifier.navigationBarsPadding() else Modifier
+    val shareCurrent: () -> Unit = {
+        currentEntry?.let { entry ->
+            scope.launch {
+                val file = viewModel.shareFile(entry)
+                if (file != null) {
+                    val shareUri = FileProvider.getUriForFile(
+                        context,
+                        "${context.packageName}.fileprovider",
+                        file
+                    )
+                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                        type = if (entry.type == MediaType.IMAGE) "image/*" else "video/*"
+                        putExtra(Intent.EXTRA_STREAM, shareUri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    context.startActivity(Intent.createChooser(shareIntent, "Share ${entry.name}"))
+                }
+            }
+        }
+    }
 
     Box(
         modifier = modifier.background(Color.Black)
     ) {
-        HorizontalPager(
-            state = pagerState,
+        ViewerStage(
+            fileName = currentEntry?.name,
+            page = pagerState.currentPage + 1,
+            pageCount = entries.size,
+            showBack = showBack,
+            onBack = onBack,
+            isVideo = entries.getOrNull(pagerState.currentPage)?.type == MediaType.VIDEO,
+            onShare = shareCurrent,
+            applyInsets = applyInsets,
             modifier = Modifier.fillMaxSize()
-        ) { page ->
-            val entry = entries.getOrNull(page) ?: return@HorizontalPager
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                when (entry.type) {
-                    MediaType.IMAGE -> ZoomableImage(
-                        entry = entry,
-                        viewModel = viewModel,
-                        onTap = { showUi = !showUi }
-                    )
-                    MediaType.VIDEO -> VideoPage(entry, viewModel, isActive = page == pagerState.currentPage)
+        ) { toggleOverlay ->
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize()
+            ) { page ->
+                val entry = entries.getOrNull(page) ?: return@HorizontalPager
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    when (entry.type) {
+                        MediaType.IMAGE -> ZoomableImage(
+                            entry = entry,
+                            viewModel = viewModel,
+                            onTap = toggleOverlay
+                        )
+                        MediaType.VIDEO -> VideoPage(entry, viewModel, isActive = page == pagerState.currentPage)
+                    }
                 }
             }
         }
+    }
+}
 
+/**
+ * Hosts the media content and the M3 overlay controls, owning the show/hide
+ * ([ViewerOverlay]) state. Kept separate from [ViewerContent] so the overlay
+ * behavior can be tested in isolation with a fake media slot.
+ *
+ * @param media the actual media content; call `toggleOverlay` (typically on a
+ *   tap) to show/hide the overlay controls.
+ */
+@Composable
+fun ViewerStage(
+    fileName: String?,
+    page: Int,
+    pageCount: Int,
+    showBack: Boolean,
+    onBack: (() -> Unit)?,
+    isVideo: Boolean,
+    onShare: () -> Unit,
+    applyInsets: Boolean,
+    modifier: Modifier = Modifier,
+    media: @Composable (toggleOverlay: () -> Unit) -> Unit
+) {
+    var showUi by remember { mutableStateOf(true) }
+
+    Box(modifier = modifier) {
+        media { showUi = !showUi }
         if (showUi) {
-            if (showBack && onBack != null) {
-                IconButton(
-                    onClick = onBack,
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .then(topInset)
-                        .padding(12.dp)
-                        .zIndex(10f)
-                        .clip(MaterialTheme.shapes.small)
-                        .background(Color.Black.copy(alpha = 0.4f))
-                        .semantics { contentDescription = "Go back" }
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back",
-                        tint = Color.White
-                    )
-                }
-            }
+            ViewerOverlay(
+                fileName = fileName,
+                page = page,
+                pageCount = pageCount,
+                showBack = showBack,
+                onBack = onBack,
+                isVideo = isVideo,
+                onShare = onShare,
+                applyInsets = applyInsets,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    }
+}
 
-            currentEntry?.let { entry ->
-                Text(
-                    text = entry.name,
-                    color = Color.White.copy(alpha = 0.8f),
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .then(topInset)
-                        .padding(top = 16.dp)
-                        .zIndex(10f)
-                        .clip(MaterialTheme.shapes.small)
-                        .background(Color.Black.copy(alpha = 0.4f))
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                        .semantics { contentDescription = "File name: ${entry.name}" },
-                    maxLines = 1
+/**
+ * The M3 overlay controls floating over the media surface: a tonal back
+ * button, a filename pill, a page-counter pill, and a share control
+ * (ExtendedFAB for images, tonal icon button for videos so it never covers
+ * the player's bottom controller). All controls use the inverseSurface /
+ * inverseOnSurface pair (the Snackbar treatment) so they stay legible on the
+ * always-black media surface in both light and dark themes.
+ */
+@Composable
+fun ViewerOverlay(
+    fileName: String?,
+    page: Int,
+    pageCount: Int,
+    showBack: Boolean,
+    onBack: (() -> Unit)?,
+    isVideo: Boolean,
+    onShare: () -> Unit,
+    applyInsets: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val topInset = if (applyInsets) Modifier.statusBarsPadding() else Modifier
+    val bottomInset = if (applyInsets) Modifier.navigationBarsPadding() else Modifier
+    val overlayColors = IconButtonDefaults.filledTonalIconButtonColors(
+        containerColor = MaterialTheme.colorScheme.inverseSurface,
+        contentColor = MaterialTheme.colorScheme.inverseOnSurface
+    )
+
+    Box(modifier = modifier) {
+        if (showBack && onBack != null) {
+            FilledTonalIconButton(
+                onClick = onBack,
+                colors = overlayColors,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .then(topInset)
+                    .padding(12.dp)
+                    .zIndex(10f)
+                    .semantics { contentDescription = "Go back" }
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back"
                 )
             }
+        }
 
-            IconButton(
-                onClick = {
-                    currentEntry?.let { entry ->
-                        scope.launch {
-                            val file = viewModel.shareFile(entry)
-                            if (file != null) {
-                                val shareUri = FileProvider.getUriForFile(
-                                    context,
-                                    "${context.packageName}.fileprovider",
-                                    file
-                                )
-                                val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                    type = if (entry.type == MediaType.IMAGE) "image/*" else "video/*"
-                                    putExtra(Intent.EXTRA_STREAM, shareUri)
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                }
-                                context.startActivity(Intent.createChooser(shareIntent, "Share ${entry.name}"))
-                            }
-                        }
-                    }
-                },
+        if (fileName != null) {
+            Surface(
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.inverseSurface,
+                contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth(0.6f)
+                    .then(topInset)
+                    .padding(top = 16.dp)
+                    .zIndex(10f)
+                    .semantics { contentDescription = "File name: $fileName" }
+            ) {
+                Text(
+                    text = fileName,
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        Surface(
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.inverseSurface,
+            contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .then(bottomInset)
+                .padding(bottom = 24.dp)
+                .zIndex(10f)
+                .semantics { contentDescription = "Page $page of $pageCount" }
+        ) {
+            Text(
+                text = "$page / $pageCount",
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+            )
+        }
+
+        if (isVideo) {
+            // For videos, keep share at the top so it never covers the
+            // player's bottom controller.
+            FilledTonalIconButton(
+                onClick = onShare,
+                colors = overlayColors,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .then(topInset)
                     .padding(12.dp)
                     .zIndex(10f)
-                    .clip(MaterialTheme.shapes.small)
-                    .background(Color.Black.copy(alpha = 0.4f))
                     .semantics { contentDescription = "Share file" }
             ) {
-                Icon(
-                    Icons.Outlined.Share,
-                    contentDescription = "Share",
-                    tint = Color.White
-                )
+                Icon(Icons.Outlined.Share, contentDescription = "Share")
             }
-
-            Text(
-                text = "${pagerState.currentPage + 1} / ${entries.size}",
-                color = Color.White.copy(alpha = 0.7f),
+        } else {
+            ExtendedFloatingActionButton(
+                onClick = onShare,
+                containerColor = MaterialTheme.colorScheme.inverseSurface,
+                contentColor = MaterialTheme.colorScheme.inverseOnSurface,
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
+                    .align(Alignment.BottomEnd)
                     .then(bottomInset)
-                    .padding(bottom = 24.dp)
+                    .padding(16.dp)
                     .zIndex(10f)
-                    .clip(MaterialTheme.shapes.large)
-                    .background(Color.Black.copy(alpha = 0.4f))
-                    .padding(horizontal = 16.dp, vertical = 6.dp)
-                    .semantics { contentDescription = "Page ${pagerState.currentPage + 1} of ${entries.size}" }
+                    .semantics { contentDescription = "Share file" },
+                icon = { Icon(Icons.Outlined.Share, contentDescription = null) },
+                text = { Text("Share") }
             )
         }
     }

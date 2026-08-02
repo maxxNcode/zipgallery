@@ -39,3 +39,8 @@ build.ps1
 
 # Docs/plans
 docs/
+
+# Agent tooling
+.agents/
+.claude/
+skills-lock.json
