@@ -19,6 +19,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -99,7 +100,14 @@ private fun AppContent(viewModel: GalleryViewModel) {
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    // Paint the app background from the active M3 color scheme so the content
+    // and text roles always come from the same palette — the window background
+    // (which follows the system) can never mismatch the Compose theme again.
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
         AnimatedContent(
             targetState = state.screen,
             transitionSpec = {

@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.FolderZip
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -85,11 +86,14 @@ fun MainScreen(
 
             Spacer(Modifier.height(24.dp))
 
+            // Title follows the scheme's primary accent so it stays bright and
+            // legible on the dark surface, echoing the light primaryContainer
+            // of the logo tile.
             Text(
                 text = "ZipGallery",
                 style = MaterialTheme.typography.headlineLarge,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
+                color = MaterialTheme.colorScheme.primary
             )
 
             Spacer(Modifier.height(8.dp))
@@ -112,8 +116,14 @@ fun MainScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
+                // M3 filled button (pill-shaped by default) with explicit
+                // scheme-derived colors so it adapts to the active theme.
                 Button(
                     onClick = { launcher.launch(ArchiveFormat.mimeTypes()) },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ),
                     modifier = Modifier
                         .fillMaxWidth(0.7f)
                         .semantics { contentDescription = "Open archive file button" }

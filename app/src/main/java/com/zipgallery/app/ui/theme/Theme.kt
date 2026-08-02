@@ -2,6 +2,7 @@ package com.zipgallery.app.ui.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
@@ -9,8 +10,10 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalContext
 import com.zipgallery.app.model.AppThemeMode
+import kotlin.math.pow
 
 /**
  * Baseline Material 3 schemes for a teal brand seed (#00696D) — a nod to the
@@ -90,12 +93,77 @@ private val DarkColorScheme = darkColorScheme(
     scrim = Color(0xFF000000)
 )
 
+/** WCAG AA minimum contrast ratio for normal-size text. */
+private const val MIN_TEXT_CONTRAST_RATIO = 4.5
+
+/** Relative luminance of a color in the [0, 1] range (WCAG 2.x definition). */
+private fun Color.luminance(): Double {
+    fun channel(c: Float): Double {
+        val v = c.toDouble()
+        return if (v <= 0.03928) v / 12.92 else ((v + 0.055) / 1.055).pow(2.4)
+    }
+    return 0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue)
+}
+
+/** WCAG contrast ratio between two colors (range 1..21). */
+private fun contrastRatio(a: Color, b: Color): Double {
+    val la = a.luminance()
+    val lb = b.luminance()
+    val lighter = maxOf(la, lb)
+    val darker = minOf(la, lb)
+    return (lighter + 0.05) / (darker + 0.05)
+}
+
+/**
+ * Returns [on] blended toward the light/dark pole until it clears the WCAG AA
+ * 4.5:1 threshold against [container]. Used as a readability safety net on
+ * wallpaper-derived (Material You) schemes, whose text colors occasionally
+ * come out too close to their backgrounds to read comfortably. Colors that
+ * already pass are returned unchanged.
+ */
+private fun ensureReadable(on: Color, container: Color): Color {
+    if (contrastRatio(on, container) >= MIN_TEXT_CONTRAST_RATIO) return on
+    // Blend toward whichever pole (white or black) gives the best contrast
+    // against the container. One of the poles always clears WCAG AA, so this
+    // guarantees the loop below terminates with a readable color.
+    val target = if (contrastRatio(Color.White, container) > contrastRatio(Color.Black, container)) {
+        Color.White
+    } else {
+        Color.Black
+    }
+    var result = on
+    for (step in 1..24) {
+        result = lerp(on, target, step / 24f)
+        if (contrastRatio(result, container) >= MIN_TEXT_CONTRAST_RATIO) break
+    }
+    return result
+}
+
+/**
+ * Enforces the WCAG AA text contrast floor on every text role of the scheme,
+ * keeping the personalized palette while guaranteeing readable text.
+ */
+private fun ColorScheme.withAccessibleText(): ColorScheme = copy(
+    onSurface = ensureReadable(onSurface, surface),
+    onSurfaceVariant = ensureReadable(onSurfaceVariant, surface),
+    onPrimary = ensureReadable(onPrimary, primary),
+    onPrimaryContainer = ensureReadable(onPrimaryContainer, primaryContainer),
+    onSecondary = ensureReadable(onSecondary, secondary),
+    onSecondaryContainer = ensureReadable(onSecondaryContainer, secondaryContainer),
+    onTertiary = ensureReadable(onTertiary, tertiary),
+    onTertiaryContainer = ensureReadable(onTertiaryContainer, tertiaryContainer),
+    onError = ensureReadable(onError, error),
+    onErrorContainer = ensureReadable(onErrorContainer, errorContainer),
+    inverseOnSurface = ensureReadable(inverseOnSurface, inverseSurface)
+)
+
 /**
  * ZipGallery theme.
  *
  * @param themeMode forced light / dark / follow-system selection.
  * @param dynamicColor when true (and on Android 12+), uses Material You dynamic
- *   color so the app takes its palette from the user's wallpaper.
+ *   color so the app takes its palette from the user's wallpaper. Text roles are
+ *   contrast-checked afterward so the palette stays personal but readable.
  */
 @Composable
 fun ZipGalleryTheme(
@@ -111,9 +179,10 @@ fun ZipGalleryTheme(
     }
     val colorScheme = when {
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+            val dynamic = if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+            dynamic.withAccessibleText()
         }
-        else -> if (darkTheme) DarkColorScheme else LightColorScheme
+        else -> if (darkTheme) DarkColorScheme.withAccessibleText() else LightColorScheme.withAccessibleText()
     }
     MaterialTheme(
         colorScheme = colorScheme,
