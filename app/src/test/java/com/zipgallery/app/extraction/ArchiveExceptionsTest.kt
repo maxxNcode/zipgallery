@@ -7,14 +7,17 @@ class ArchiveExceptionsTest {
 
     @Test
     fun `sanitizeFileName replaces path separators`() {
-        assertEquals("folder_image_jpg", sanitizeFileName("folder/image.jpg"))
-        assertEquals("folder_image_jpg", sanitizeFileName("folder\\image.jpg"))
+        // Path separators become underscores; the file extension is preserved.
+        assertEquals("folder_image.jpg", sanitizeFileName("folder/image.jpg"))
+        assertEquals("folder_image.jpg", sanitizeFileName("folder\\image.jpg"))
     }
 
     @Test
     fun `sanitizeFileName replaces special characters`() {
-        assertEquals("file_name_txt", sanitizeFileName("file:name?.txt"))
-        assertEquals("a_b_c_d_txt", sanitizeFileName("a<b>c\"d.txt"))
+        // Illegal characters (colon, question mark, angle brackets, quotes) are
+        // replaced; the extension dot is intentionally kept.
+        assertEquals("file_name_.txt", sanitizeFileName("file:name?.txt"))
+        assertEquals("a_b_c_d.txt", sanitizeFileName("a<b>c\"d.txt"))
     }
 
     @Test

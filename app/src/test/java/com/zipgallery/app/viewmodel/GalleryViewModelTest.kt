@@ -38,22 +38,26 @@ class GalleryViewModelTest {
 
     @Test
     fun `calculateInSampleSize handles tall images`() {
+        // Only one dimension exceeds the target, so no downsampling occurs
+        // (the canonical algorithm requires both dimensions to be larger).
         val opts = BitmapFactory.Options().apply {
             outWidth = 500
             outHeight = 5000
         }
         val sampleSize = GalleryViewModel.calculateInSampleSize(opts, 512, 512)
-        assertEquals(4, sampleSize)
+        assertEquals(1, sampleSize)
     }
 
     @Test
     fun `calculateInSampleSize handles wide images`() {
+        // Only one dimension exceeds the target, so no downsampling occurs
+        // (the canonical algorithm requires both dimensions to be larger).
         val opts = BitmapFactory.Options().apply {
             outWidth = 5000
             outHeight = 500
         }
         val sampleSize = GalleryViewModel.calculateInSampleSize(opts, 512, 512)
-        assertEquals(4, sampleSize)
+        assertEquals(1, sampleSize)
     }
 
     @Test

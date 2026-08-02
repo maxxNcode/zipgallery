@@ -56,11 +56,17 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         if (savedTheme != null) {
             state = state.copy(themeMode = AppThemeMode.valueOf(savedTheme))
         }
+        state = state.copy(useDynamicColor = prefs.getBoolean("dynamic_color", true))
     }
 
     fun setThemeMode(mode: AppThemeMode) {
         state = state.copy(themeMode = mode)
         prefs.edit().putString("theme_mode", mode.name).apply()
+    }
+
+    fun setDynamicColor(enabled: Boolean) {
+        state = state.copy(useDynamicColor = enabled)
+        prefs.edit().putBoolean("dynamic_color", enabled).apply()
     }
 
     val filteredEntries: List<MediaEntry>
@@ -174,8 +180,10 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                         archiveName = displayName,
                         searchQuery = "",
                         sortType = SortType.NAME_ASC,
-                        filterType = FilterType.ALL
+                        filterType = FilterType.ALL,
+                        viewerIndex = 0
                     )
+                    viewerIndex = 0
                     pregenerateThumbnails(entries)
                 },
                 onFailure = { e ->
@@ -304,6 +312,27 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         if (index >= 0) {
             viewerIndex = index
             state = state.copy(screen = AppScreen.Viewer, viewerIndex = index)
+        }
+    }
+
+    /**
+     * Selects an entry for the detail pane in two-pane (adaptive) mode without
+     * navigating to the full-screen viewer.
+     */
+    fun selectEntry(entry: MediaEntry) {
+        val index = filteredEntries.indexOf(entry)
+        if (index >= 0) {
+            viewerIndex = index
+        }
+    }
+
+    /**
+     * Syncs the current viewer page (used to keep the two-pane grid highlight
+     * in step when the user swipes through the detail pane).
+     */
+    fun syncViewerPage(index: Int) {
+        if (index in 0..filteredEntries.lastIndex) {
+            viewerIndex = index
         }
     }
 

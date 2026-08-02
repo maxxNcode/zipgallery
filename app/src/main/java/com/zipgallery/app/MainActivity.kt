@@ -50,7 +50,10 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val viewModel: GalleryViewModel = viewModel()
-            ZipGalleryTheme(themeMode = viewModel.state.themeMode) {
+            ZipGalleryTheme(
+                themeMode = viewModel.state.themeMode,
+                dynamicColor = viewModel.state.useDynamicColor
+            ) {
 
                 val uriToOpen = pendingUri
                 if (uriToOpen != null) {

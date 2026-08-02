@@ -17,13 +17,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -73,11 +73,39 @@ fun ViewerScreen(
     onBack: () -> Unit
 ) {
     BackHandler(onBack = onBack)
+    ViewerContent(
+        viewModel = viewModel,
+        showBack = true,
+        onBack = onBack,
+        applyInsets = true
+    )
+}
 
+/**
+ * Reusable media viewer used both as the full-screen viewer (compact windows)
+ * and as the detail pane of the adaptive two-pane gallery (medium/expanded
+ * windows). The black container is intentionally part of this content so the
+ * detail pane reads as an immersive media surface.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun ViewerContent(
+    viewModel: GalleryViewModel,
+    modifier: Modifier = Modifier,
+    showBack: Boolean = true,
+    onBack: (() -> Unit)? = null,
+    applyInsets: Boolean = true
+) {
     val entries = viewModel.filteredEntries
-    val initialIndex = viewModel.viewerIndex
+    if (entries.isEmpty()) {
+        Box(modifier = modifier.background(Color.Black))
+        return
+    }
+
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val maxIndex = entries.size - 1
+    val initialIndex = viewModel.viewerIndex.coerceIn(0, maxIndex)
 
     val pagerState = rememberPagerState(initialPage = initialIndex) { entries.size }
 
@@ -96,12 +124,24 @@ fun ViewerScreen(
 
     LaunchedEffect(pagerState.currentPage) {
         currentEntry = entries.getOrNull(pagerState.currentPage)
+        // Keep the grid highlight in sync when swiping the detail pane. Safe:
+        // the viewerIndex effect below no-ops when target == current page.
+        viewModel.syncViewerPage(pagerState.currentPage)
     }
 
+    // Follow selection changes from the list pane in two-pane mode.
+    LaunchedEffect(viewModel.viewerIndex) {
+        val target = viewModel.viewerIndex.coerceIn(0, maxIndex)
+        if (pagerState.currentPage != target) {
+            pagerState.scrollToPage(target)
+        }
+    }
+
+    val topInset = if (applyInsets) Modifier.statusBarsPadding() else Modifier
+    val bottomInset = if (applyInsets) Modifier.navigationBarsPadding() else Modifier
+
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
+        modifier = modifier.background(Color.Black)
     ) {
         HorizontalPager(
             state = pagerState,
@@ -124,22 +164,24 @@ fun ViewerScreen(
         }
 
         if (showUi) {
-            IconButton(
-                onClick = onBack,
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .statusBarsPadding()
-                    .padding(12.dp)
-                    .zIndex(10f)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color.Black.copy(alpha = 0.4f))
-                    .semantics { contentDescription = "Go back" }
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Back",
-                    tint = Color.White
-                )
+            if (showBack && onBack != null) {
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .then(topInset)
+                        .padding(12.dp)
+                        .zIndex(10f)
+                        .clip(MaterialTheme.shapes.small)
+                        .background(Color.Black.copy(alpha = 0.4f))
+                        .semantics { contentDescription = "Go back" }
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = Color.White
+                    )
+                }
             }
 
             currentEntry?.let { entry ->
@@ -148,10 +190,10 @@ fun ViewerScreen(
                     color = Color.White.copy(alpha = 0.8f),
                     modifier = Modifier
                         .align(Alignment.TopCenter)
-                        .statusBarsPadding()
+                        .then(topInset)
                         .padding(top = 16.dp)
                         .zIndex(10f)
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(MaterialTheme.shapes.small)
                         .background(Color.Black.copy(alpha = 0.4f))
                         .padding(horizontal = 12.dp, vertical = 6.dp)
                         .semantics { contentDescription = "File name: ${entry.name}" },
@@ -182,10 +224,10 @@ fun ViewerScreen(
                 },
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .statusBarsPadding()
+                    .then(topInset)
                     .padding(12.dp)
                     .zIndex(10f)
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(MaterialTheme.shapes.small)
                     .background(Color.Black.copy(alpha = 0.4f))
                     .semantics { contentDescription = "Share file" }
             ) {
@@ -201,10 +243,10 @@ fun ViewerScreen(
                 color = Color.White.copy(alpha = 0.7f),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
+                    .then(bottomInset)
                     .padding(bottom = 24.dp)
                     .zIndex(10f)
-                    .clip(RoundedCornerShape(16.dp))
+                    .clip(MaterialTheme.shapes.large)
                     .background(Color.Black.copy(alpha = 0.4f))
                     .padding(horizontal = 16.dp, vertical = 6.dp)
                     .semantics { contentDescription = "Page ${pagerState.currentPage + 1} of ${entries.size}" }

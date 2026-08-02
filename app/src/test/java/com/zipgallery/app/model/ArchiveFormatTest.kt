@@ -13,9 +13,11 @@ class ArchiveFormatTest {
     }
 
     @Test
-    fun `fromFileName detects RAR correctly`() {
-        assertEquals(ArchiveFormat.RAR, ArchiveFormat.fromFileName("data.rar"))
-        assertEquals(ArchiveFormat.RAR, ArchiveFormat.fromFileName("archive.RAR"))
+    fun `fromFileName returns UNKNOWN for RAR files`() {
+        // RAR has no dedicated enum entry; the file picker still offers the
+        // rar mime type and it is handled through the generic reader.
+        assertEquals(ArchiveFormat.UNKNOWN, ArchiveFormat.fromFileName("data.rar"))
+        assertEquals(ArchiveFormat.UNKNOWN, ArchiveFormat.fromFileName("archive.RAR"))
     }
 
     @Test

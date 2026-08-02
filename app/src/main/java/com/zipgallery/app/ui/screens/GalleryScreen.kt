@@ -1,7 +1,9 @@
 package com.zipgallery.app.ui.screens
 
+import android.app.Activity
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -10,7 +12,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -19,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -26,6 +31,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -33,6 +39,7 @@ import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.outlined.ImageSearch
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -40,12 +47,15 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SearchBar
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.VerticalDivider
+import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
+import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
+import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -61,9 +71,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -78,7 +90,7 @@ import com.zipgallery.app.model.MediaType
 import com.zipgallery.app.model.SortType
 import com.zipgallery.app.viewmodel.GalleryViewModel
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3WindowSizeClassApi::class)
 @Composable
 fun GalleryScreen(
     viewModel: GalleryViewModel,
@@ -112,8 +124,12 @@ fun GalleryScreen(
         }
     }
 
-    val imageCount = state.entries.count { it.type == MediaType.IMAGE }
-    val videoCount = state.entries.count { it.type == MediaType.VIDEO }
+    // Adaptive layout: non-compact windows get a two-pane list-detail gallery
+    // (grid on the left, media viewer on the right); compact windows keep the
+    // full-screen grid -> full-screen viewer flow.
+    val windowSizeClass = calculateWindowSizeClass(LocalContext.current as Activity)
+    val twoPane = windowSizeClass.widthSizeClass != WindowWidthSizeClass.Compact
+    val selectedPath = viewModel.filteredEntries.getOrNull(viewModel.viewerIndex)?.path
 
     Scaffold(
         topBar = {
@@ -145,7 +161,7 @@ fun GalleryScreen(
                     )
                 )
                 if (showSearch) {
-                    SearchBar(
+                    GallerySearchBar(
                         query = state.searchQuery,
                         onQueryChange = { viewModel.setSearchQuery(it) },
                         onClose = { showSearch = false; viewModel.setSearchQuery("") }
@@ -154,8 +170,6 @@ fun GalleryScreen(
                 FilterBar(
                     current = state.filterType,
                     currentSort = state.sortType,
-                    imageCount = imageCount,
-                    videoCount = videoCount,
                     onSelectFilter = { viewModel.setFilter(it) },
                     onSelectSort = { viewModel.setSortType(it) }
                 )
@@ -169,83 +183,143 @@ fun GalleryScreen(
                     .padding(padding),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = if (state.searchQuery.isNotBlank()) "No results for \"${state.searchQuery}\""
-                           else if (state.entries.isEmpty()) "No images or videos found."
-                           else "No ${state.filterType.name.lowercase()} found.",
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
-                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = Icons.Outlined.ImageSearch,
+                        contentDescription = null,
+                        modifier = Modifier.size(64.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = if (state.searchQuery.isNotBlank()) "No results for \"${state.searchQuery}\""
+                               else if (state.entries.isEmpty()) "No images or videos found."
+                               else "No ${state.filterType.name.lowercase()} found.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
-        } else {
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 120.dp),
+        } else if (twoPane) {
+            Row(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding),
-                state = gridState,
-                contentPadding = PaddingValues(6.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                    .padding(padding)
             ) {
-                items(items, span = { item ->
-                    if (item is GridItem.Header) GridItemSpan(maxLineSpan)
-                    else GridItemSpan(1)
-                }, key = { item ->
-                    when (item) {
-                        is GridItem.Header -> "header_${item.type.name}"
-                        is GridItem.Media -> item.entry.path
-                    }
-                }) { item ->
-                    when (item) {
-                        is GridItem.Header -> SectionHeader(item.type, item.count)
-                        is GridItem.Media -> MediaThumbnail(
-                            entry = item.entry,
-                            viewModel = viewModel,
-                            onClick = { onItemClick(item.entry) }
-                        )
-                    }
+                MediaGrid(
+                    items = items,
+                    gridState = gridState,
+                    viewModel = viewModel,
+                    selectedPath = selectedPath,
+                    onItemClick = { viewModel.selectEntry(it) },
+                    modifier = Modifier.weight(0.9f)
+                )
+                VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Box(
+                    modifier = Modifier
+                        .weight(1.1f)
+                        .fillMaxHeight()
+                ) {
+                    ViewerContent(
+                        viewModel = viewModel,
+                        showBack = false,
+                        onBack = null,
+                        applyInsets = false,
+                        modifier = Modifier.fillMaxSize()
+                    )
                 }
+            }
+        } else {
+            MediaGrid(
+                items = items,
+                gridState = gridState,
+                viewModel = viewModel,
+                onItemClick = { onItemClick(it) },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun GallerySearchBar(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onClose: () -> Unit
+) {
+    SearchBar(
+        query = query,
+        onQueryChange = onQueryChange,
+        onSearch = {},
+        active = false,
+        onActiveChange = {},
+        placeholder = { Text("Search files...") },
+        leadingIcon = {
+            Icon(Icons.Default.Search, contentDescription = "Search")
+        },
+        trailingIcon = {
+            IconButton(
+                onClick = onClose,
+                modifier = Modifier.semantics { contentDescription = "Close search" }
+            ) {
+                Icon(Icons.Default.Clear, contentDescription = "Close")
+            }
+        },
+        windowInsets = WindowInsets(0),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        content = {}
+    )
+}
+
+@Composable
+private fun MediaGrid(
+    items: List<GridItem>,
+    gridState: LazyGridState,
+    viewModel: GalleryViewModel,
+    onItemClick: (MediaEntry) -> Unit,
+    modifier: Modifier = Modifier,
+    selectedPath: String? = null
+) {
+    LazyVerticalGrid(
+        columns = GridCells.Adaptive(minSize = 120.dp),
+        modifier = modifier,
+        state = gridState,
+        contentPadding = PaddingValues(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        items(items, span = { item ->
+            if (item is GridItem.Header) GridItemSpan(maxLineSpan)
+            else GridItemSpan(1)
+        }, key = { item ->
+            when (item) {
+                is GridItem.Header -> "header_${item.type.name}"
+                is GridItem.Media -> item.entry.path
+            }
+        }) { item ->
+            when (item) {
+                is GridItem.Header -> SectionHeader(item.type, item.count)
+                is GridItem.Media -> MediaThumbnail(
+                    entry = item.entry,
+                    viewModel = viewModel,
+                    selected = selectedPath != null && item.entry.path == selectedPath,
+                    onClick = { onItemClick(item.entry) }
+                )
             }
         }
     }
 }
 
 @Composable
-private fun SearchBar(
-    query: String,
-    onQueryChange: (String) -> Unit,
-    onClose: () -> Unit
-) {
-    OutlinedTextField(
-        value = query,
-        onValueChange = onQueryChange,
-        placeholder = { Text("Search files...") },
-        leadingIcon = {
-            Icon(Icons.Default.Search, contentDescription = "Search",
-                modifier = Modifier.semantics { contentDescription = "Search" })
-        },
-        trailingIcon = {
-            IconButton(onClick = onClose,
-                modifier = Modifier.semantics { contentDescription = "Close search" }) {
-                Icon(Icons.Default.Clear, contentDescription = "Close")
-            }
-        },
-        singleLine = true,
-        colors = OutlinedTextFieldDefaults.colors(
-            unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
-        ),
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-    )
-}
-
-@Composable
 private fun FilterBar(
     current: FilterType,
     currentSort: SortType,
-    imageCount: Int,
-    videoCount: Int,
     onSelectFilter: (FilterType) -> Unit,
     onSelectSort: (SortType) -> Unit
 ) {
@@ -298,13 +372,23 @@ private fun FilterBar(
                 onDismissRequest = { showSortMenu = false }
             ) {
                 SortType.entries.forEach { sortType ->
+                    val isSelected = sortType == currentSort
                     DropdownMenuItem(
                         text = {
                             Text(
                                 sortType.label,
-                                fontWeight = if (sortType == currentSort) FontWeight.Bold else FontWeight.Normal
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
                             )
                         },
+                        trailingIcon = if (isSelected) {
+                            {
+                                Icon(
+                                    Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        } else null,
                         onClick = {
                             onSelectSort(sortType)
                             showSortMenu = false
@@ -340,7 +424,7 @@ private fun SectionHeader(type: MediaType, count: Int) {
             text = "$label ($count)",
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onBackground
+            color = MaterialTheme.colorScheme.onSurface
         )
     }
 }
@@ -349,6 +433,7 @@ private fun SectionHeader(type: MediaType, count: Int) {
 private fun MediaThumbnail(
     entry: MediaEntry,
     viewModel: GalleryViewModel,
+    selected: Boolean = false,
     onClick: () -> Unit
 ) {
     val thumbnailFile by produceState<Any?>(null, entry.path) {
@@ -359,7 +444,14 @@ private fun MediaThumbnail(
         modifier = Modifier
             .aspectRatio(1f)
             .clip(MaterialTheme.shapes.small)
-            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+            .then(
+                if (selected) {
+                    Modifier.border(2.dp, MaterialTheme.colorScheme.primary, MaterialTheme.shapes.small)
+                } else {
+                    Modifier
+                }
+            )
             .clickable(onClick = onClick)
             .semantics {
                 contentDescription = "${entry.type.name.lowercase()} ${entry.name}"
@@ -367,7 +459,7 @@ private fun MediaThumbnail(
     ) {
         if (thumbnailFile != null) {
             AsyncImage(
-                model = ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
+                model = ImageRequest.Builder(LocalContext.current)
                     .data(thumbnailFile)
                     .size(Size(512, 512))
                     .crossfade(true)

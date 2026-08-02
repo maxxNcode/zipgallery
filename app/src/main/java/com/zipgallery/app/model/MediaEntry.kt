@@ -41,5 +41,6 @@ data class GalleryState(
     val showPasswordDialog: Boolean = false,
     val passwordError: String? = null,
     val themeMode: AppThemeMode = AppThemeMode.SYSTEM,
+    val useDynamicColor: Boolean = true,
     val archiveName: String = ""
 )
