@@ -36,8 +36,6 @@ data class GalleryState(
     val filterType: FilterType = FilterType.ALL,
     val sortType: SortType = SortType.NAME_ASC,
     val searchQuery: String = "",
-    val scrollIndex: Int = 0,
-    val scrollOffset: Int = 0,
     val showPasswordDialog: Boolean = false,
     val passwordError: String? = null,
     val themeMode: AppThemeMode = AppThemeMode.SYSTEM,

@@ -61,7 +61,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -82,6 +81,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.size.Size
+import kotlinx.coroutines.flow.sample
 import com.zipgallery.app.model.AppScreen
 import com.zipgallery.app.model.FilterType
 import com.zipgallery.app.model.GridItem
@@ -105,20 +105,28 @@ fun GalleryScreen(
     val gridState = rememberLazyGridState()
     var showSearch by rememberSaveable { mutableStateOf(false) }
 
+    // Save scroll position at most every ~100ms instead of every frame.
+    // snapshotFlow emits on every scroll delta; sample() collapses that burst
+    // into ~10 writes/sec, avoiding a per-frame state invalidation storm while
+    // still keeping the saved position close enough to restore accurately.
     LaunchedEffect(gridState) {
         snapshotFlow { gridState.firstVisibleItemIndex to gridState.firstVisibleItemScrollOffset }
+            .sample(SCROLL_SAVE_INTERVAL_MS)
             .collect { (index, offset) ->
                 viewModel.saveScrollState(index, offset)
             }
     }
 
     LaunchedEffect(state.screen, state.filterType, state.sortType, state.searchQuery) {
-        if (state.screen == AppScreen.Gallery && state.scrollIndex > 0) {
-            gridState.scrollToItem(state.scrollIndex, state.scrollOffset)
+        if (state.screen == AppScreen.Gallery && viewModel.scrollIndex > 0) {
+            gridState.scrollToItem(viewModel.scrollIndex, viewModel.scrollOffset)
         }
     }
 
-    DisposableEffect(state.filterType) {
+    // Flush the exact scroll position whenever the filter changes OR the screen
+    // changes — sample() throttling may otherwise leave the saved position stale
+    // (up to ~100ms + fling deceleration) when navigating away mid-scroll.
+    DisposableEffect(state.filterType, state.screen) {
         onDispose {
             viewModel.saveScrollState(gridState.firstVisibleItemIndex, gridState.firstVisibleItemScrollOffset)
         }
@@ -243,6 +251,9 @@ fun GalleryScreen(
         }
     }
 }
+
+/** How often scroll position is persisted to the ViewModel during scroll. */
+private const val SCROLL_SAVE_INTERVAL_MS = 100L
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -438,8 +449,15 @@ private fun MediaThumbnail(
     selected: Boolean = false,
     onClick: () -> Unit
 ) {
-    val thumbnailFile by produceState<Any?>(null, entry.path) {
-        value = viewModel.getThumbnailFile(entry)
+    // Read this cell's OWN thumbnail state (per-cell State in the ViewModel).
+    // Scrolling back shows the cached thumb instantly, and a thumbnail landing
+    // recomposes ONLY this cell — never the whole grid (a global map would
+    // invalidate every cell on any write).
+    val thumbnailFile by viewModel.thumbnailStateFor(entry.path)
+
+    // Kick off generation once if the thumb isn't ready yet.
+    LaunchedEffect(entry.path) {
+        viewModel.ensureThumbnail(entry)
     }
 
     Box(
@@ -465,9 +483,10 @@ private fun MediaThumbnail(
                     .data(thumbnailFile)
                     // Decode at the thumbnail's own size — never upscale or
                     // re-decode the full-resolution file, keeping scrolls smooth.
+                    // No crossfade: during fast scroll, dozens of transitions
+                    // would stack up and add GPU/recomposition work.
                     .size(Size(GalleryViewModel.THUMB_SIZE, GalleryViewModel.THUMB_SIZE))
                     .memoryCacheKey(entry.path)
-                    .crossfade(true)
                     .build(),
                 contentDescription = entry.name,
                 modifier = Modifier.fillMaxSize(),

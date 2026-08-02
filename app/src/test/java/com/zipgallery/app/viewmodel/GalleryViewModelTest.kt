@@ -22,8 +22,10 @@ class GalleryViewModelTest {
             outWidth = 4000
             outHeight = 3000
         }
+        // Dominant axis: 4000 -> halve until <= 512 => 8 (longest edge lands
+        // at ~500, just under the target).
         val sampleSize = GalleryViewModel.calculateInSampleSize(opts, 512, 512)
-        assertEquals(4, sampleSize)
+        assertEquals(8, sampleSize)
     }
 
     @Test
@@ -32,32 +34,33 @@ class GalleryViewModelTest {
             outWidth = 8000
             outHeight = 6000
         }
+        // Dominant axis: 8000 -> halve until <= 512 => 16 (longest edge ~500).
         val sampleSize = GalleryViewModel.calculateInSampleSize(opts, 512, 512)
-        assertEquals(8, sampleSize)
+        assertEquals(16, sampleSize)
     }
 
     @Test
     fun `calculateInSampleSize handles tall images`() {
-        // Only one dimension exceeds the target, so no downsampling occurs
-        // (the canonical algorithm requires both dimensions to be larger).
+        // Downsample on the dominant axis so a single oversized dimension no
+        // longer produces a full-resolution decode (the old both-dimensions
+        // algorithm returned 1 here, yielding full-res thumbnails).
         val opts = BitmapFactory.Options().apply {
             outWidth = 500
             outHeight = 5000
         }
         val sampleSize = GalleryViewModel.calculateInSampleSize(opts, 512, 512)
-        assertEquals(1, sampleSize)
+        assertEquals(16, sampleSize)
     }
 
     @Test
     fun `calculateInSampleSize handles wide images`() {
-        // Only one dimension exceeds the target, so no downsampling occurs
-        // (the canonical algorithm requires both dimensions to be larger).
+        // Same as tall: the dominant (wide) axis drives downsampling.
         val opts = BitmapFactory.Options().apply {
             outWidth = 5000
             outHeight = 500
         }
         val sampleSize = GalleryViewModel.calculateInSampleSize(opts, 512, 512)
-        assertEquals(1, sampleSize)
+        assertEquals(16, sampleSize)
     }
 
     @Test

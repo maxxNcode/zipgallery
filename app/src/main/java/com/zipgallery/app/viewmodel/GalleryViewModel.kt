@@ -6,6 +6,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -28,9 +31,13 @@ import com.zipgallery.app.model.MediaType
 import com.zipgallery.app.model.SortType
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
@@ -41,6 +48,16 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     var viewerIndex by mutableIntStateOf(0)
         private set
 
+    // Scroll position lives OUTSIDE [GalleryState] on purpose: it changes on
+    // every scroll frame, and a state.copy() per frame would invalidate every
+    // state reader (recomposing the whole screen + re-sorting entries). As its
+    // own snapshot state, scroll writes only invalidate the small scope that
+    // reads these two fields.
+    var scrollIndex by mutableIntStateOf(0)
+        private set
+    var scrollOffset by mutableIntStateOf(0)
+        private set
+
     private var sessionDir: File? = null
     private var tempArchiveFile: File? = null
     private var archivePassword: String? = null
@@ -48,13 +65,46 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     // Concurrent maps: thumbnail requests fire from many IO coroutines (grid
     // cells + viewer) at once, so plain mutable maps could corrupt under race.
     private val extractedCache = ConcurrentHashMap<String, File>()
+
+    // Successful thumbnail files (path -> file). Only successes live here —
+    // ConcurrentHashMap forbids null values, so failures are tracked separately
+    // in [attemptedThumbnails]. Not observable.
     private val thumbnailCache = ConcurrentHashMap<String, File>()
+
+    // Every path whose thumbnail was already attempted (success OR failure).
+    // This is what ensureThumbnail/warmThumbnails consult so a corrupt file is
+    // never retried on every scroll-back.
+    private val attemptedThumbnails: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    // PER-CELL observable states: each grid cell reads ONLY its own
+    // MutableState (via thumbnailStateFor), so a thumbnail landing recomposes
+    // just that cell. A single global SnapshotStateMap would invalidate every
+    // reading cell on any write, recomposing the whole grid on each landing.
+    private val thumbnailStates = ConcurrentHashMap<String, MutableState<File?>>()
 
     // Single-flight maps: every concurrent caller for the same entry awaits one
     // shared Deferred (created atomically by computeIfAbsent), so a file is
     // extracted / thumbnail generated exactly once even under heavy scroll.
     private val extractJobs = ConcurrentHashMap<String, Deferred<File?>>()
     private val thumbnailJobs = ConcurrentHashMap<String, Deferred<File?>>()
+
+    // Caps how many full archive decompressions run at once. A fast scroll can
+    // otherwise launch dozens of extractions on Dispatchers.IO (up to 64
+    // threads), flooding CPU and disk and starving the UI. Serializing them
+    // through this semaphore keeps the grid responsive while thumbs stream in.
+    private val extractSemaphore = Semaphore(MAX_CONCURRENT_EXTRACTIONS)
+
+    // Handle to the background thumbnail pre-warm so it can be cancelled when a
+    // new archive loads (it must not keep holding semaphore permits or writing
+    // stale state for a session that was torn down).
+    private var warmJob: Job? = null
+
+    // Where the background single-pass extraction writes every media file, so
+    // thumbnails and the viewer become cheap local-file reads instead of
+    // re-decompressing entries on demand. Subdir of sessionDir, deleted on
+    // cleanup like the rest of the session.
+    private var extractDir: File? = null
+    private var preExtractJob: Job? = null
 
     private val zipReader: ArchiveReader = Zip4jReader()
     private val compressReader: ArchiveReader = CommonsCompressReader()
@@ -101,37 +151,52 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             return list
         }
 
-    val gridItems: List<GridItem>
-        get() {
-            val items = mutableListOf<GridItem>()
-            val all = filteredEntries
-            val images = all.filter { it.type == MediaType.IMAGE }
-            val videos = all.filter { it.type == MediaType.VIDEO }
-            if (images.isNotEmpty()) {
-                items.add(GridItem.Header(MediaType.IMAGE, images.size))
-                images.forEach { items.add(GridItem.Media(it)) }
-            }
-            if (videos.isNotEmpty()) {
-                items.add(GridItem.Header(MediaType.VIDEO, videos.size))
-                videos.forEach { items.add(GridItem.Media(it)) }
-            }
-            return items
+    /**
+     * Grid layout memoized with [derivedStateOf]: the filter/sort pipeline only
+     * recomputes when [state] actually changes (load, filter, sort, search),
+     * never on every scroll-frame recomposition.
+     */
+    val gridItems: List<GridItem> by derivedStateOf { buildGridItems() }
+
+    private fun buildGridItems(): List<GridItem> {
+        val items = mutableListOf<GridItem>()
+        val all = filteredEntries
+        val images = all.filter { it.type == MediaType.IMAGE }
+        val videos = all.filter { it.type == MediaType.VIDEO }
+        if (images.isNotEmpty()) {
+            items.add(GridItem.Header(MediaType.IMAGE, images.size))
+            images.forEach { items.add(GridItem.Media(it)) }
         }
+        if (videos.isNotEmpty()) {
+            items.add(GridItem.Header(MediaType.VIDEO, videos.size))
+            videos.forEach { items.add(GridItem.Media(it)) }
+        }
+        return items
+    }
 
     fun setFilter(type: FilterType) {
-        state = state.copy(filterType = type, scrollIndex = 0, scrollOffset = 0)
+        state = state.copy(filterType = type)
+        resetScroll()
     }
 
     fun setSortType(type: SortType) {
-        state = state.copy(sortType = type, scrollIndex = 0, scrollOffset = 0)
+        state = state.copy(sortType = type)
+        resetScroll()
     }
 
     fun setSearchQuery(query: String) {
-        state = state.copy(searchQuery = query, scrollIndex = 0, scrollOffset = 0)
+        state = state.copy(searchQuery = query)
+        resetScroll()
     }
 
     fun saveScrollState(index: Int, offset: Int) {
-        state = state.copy(scrollIndex = index, scrollOffset = offset)
+        scrollIndex = index
+        scrollOffset = offset
+    }
+
+    private fun resetScroll() {
+        scrollIndex = 0
+        scrollOffset = 0
     }
 
     fun loadArchive(uri: Uri) {
@@ -143,6 +208,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 cleanupSession()
                 sessionDir = File(context.cacheDir, "zipg_${System.nanoTime()}")
                 sessionDir!!.mkdirs()
+                extractDir = File(sessionDir, "extracted").apply { mkdirs() }
 
                 val format = ArchiveFormat.fromUri(uri)
                 val ext = if (format == ArchiveFormat.UNKNOWN) "zip" else format.extensions.first()
@@ -183,8 +249,6 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                         isLoading = false,
                         screen = AppScreen.Gallery,
                         currentArchiveUri = uri,
-                        scrollIndex = 0,
-                        scrollOffset = 0,
                         showPasswordDialog = false,
                         passwordError = null,
                         archiveName = displayName,
@@ -194,6 +258,12 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                         viewerIndex = 0
                     )
                     viewerIndex = 0
+                    resetScroll()
+                    // Extract the whole archive to disk once (single pass, so
+                    // 7z/tar don't re-scan per entry), then pre-generate
+                    // thumbnails from the local files.
+                    preExtractMedia(entries)
+                    warmThumbnails(entries)
                 },
                 onFailure = { e ->
                     when (e) {
@@ -229,6 +299,16 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     suspend fun getExtractedFile(entry: MediaEntry): File? = withContext(Dispatchers.IO) {
         extractedCache[entry.path]?.let { return@withContext it }
+        // Fast path: the background pre-extraction already wrote this file to
+        // disk — no decompression needed, just cache and return the path.
+        val dir = extractDir
+        if (dir != null) {
+            val onDisk = File(dir, sanitizeFileName(entry.path))
+            if (onDisk.exists()) {
+                extractedCache[entry.path] = onDisk
+                return@withContext onDisk
+            }
+        }
         // computeIfAbsent is atomic: only the first caller creates the job, all
         // others share it and await the same result.
         val job = extractJobs.computeIfAbsent(entry.path) {
@@ -251,31 +331,125 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     private suspend fun doExtract(entry: MediaEntry): File? {
         val archive = tempArchiveFile ?: return null
-        return try {
+        return extractSemaphore.withPermit {
+            try {
+                val reader = when (currentFormat) {
+                    ArchiveFormat.ZIP -> zipReader
+                    else -> compressReader
+                }
+                val outDir = extractDir ?: sessionDir ?: return@withPermit null
+                reader.extractFile(archive, entry.path, archivePassword, outDir).getOrNull()
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+
+    /**
+     * Background single-pass extraction of every media entry to [extractDir].
+     * One pass through the archive (O(n)) instead of N on-demand extractions
+     * (O(n²) for 7z/tar). Files land in display order, so visible grid cells
+     * hit the disk fast path in [getExtractedFile] almost immediately.
+     */
+    private fun preExtractMedia(entries: List<MediaEntry>) {
+        preExtractJob?.cancel()
+        preExtractJob = viewModelScope.launch(Dispatchers.IO) {
+            val archive = tempArchiveFile ?: return@launch
+            val dir = extractDir ?: return@launch
             val reader = when (currentFormat) {
                 ArchiveFormat.ZIP -> zipReader
                 else -> compressReader
             }
-            reader.extractFile(archive, entry.path, archivePassword, sessionDir!!).getOrNull()
-        } catch (e: Exception) {
-            null
+            reader.extractEntries(archive, entries, archivePassword, dir)
+                .onSuccess { extracted -> extractedCache.putAll(extracted) }
+                .onFailure { e ->
+                    // Individual entries still fall back to on-demand
+                    // extraction, but log so a broken pre-pass is visible.
+                    android.util.Log.e("ZipGallery", "Bulk pre-extraction failed", e)
+                }
         }
     }
 
+    /**
+     * Returns the thumbnail file, generating it if needed, and publishes the
+     * result to the cell's own state so the UI can render it synchronously.
+     */
     suspend fun getThumbnailFile(entry: MediaEntry): File? = withContext(Dispatchers.IO) {
-        thumbnailCache[entry.path]?.let { return@withContext it }
+        // Fast path: this path was already attempted (success or failure).
+        if (entry.path in attemptedThumbnails) {
+            val result = thumbnailCache[entry.path]
+            // Publish to the cell's own state (mutableStateOf's structural
+            // equality makes a same-value publish a no-op — no recomposition).
+            thumbnailStates[entry.path]?.value = result
+            return@withContext result
+        }
+        // computeIfAbsent is atomic: only the first caller creates the job, all
+        // others share it and await the same result.
         val job = thumbnailJobs.computeIfAbsent(entry.path) {
             viewModelScope.async(Dispatchers.IO) { generateThumbnail(entry) }
         }
+        // try/finally guarantees the job leaves the map even if the deferred
+        // completes exceptionally, so a failure is never "sticky" — a later
+        // request can retry. Success is cached before removal so a racing new
+        // request hits the cache fast path instead of starting duplicate work.
         val file = try {
             job.await()
         } finally {
             thumbnailJobs.remove(entry.path)
         }
+        // Mark the attempt (success or failure) so a failed file is never
+        // retried on every scroll-back, and publish to the cell's own state.
+        attemptedThumbnails.add(entry.path)
         if (file != null) {
             thumbnailCache[entry.path] = file
         }
+        thumbnailStates[entry.path]?.value = file
         file
+    }
+
+    /**
+     * Per-cell observable thumbnail state. Reading the returned [State] in
+     * composition observes ONLY this cell's state, so a thumbnail landing here
+     * recomposes just this cell — never the whole grid. Lazily created, seeded
+     * from any already-recorded result.
+     */
+    fun thumbnailStateFor(path: String): State<File?> =
+        thumbnailStates.computeIfAbsent(path) { mutableStateOf(thumbnailCache[path]) }
+
+    /**
+     * Ensures a thumbnail for [entry] is available (or being generated) without
+     * blocking the caller. Idempotent thanks to [attemptedThumbnails] / single-flight.
+     */
+    fun ensureThumbnail(entry: MediaEntry) {
+        if (entry.path in attemptedThumbnails) return
+        viewModelScope.launch(Dispatchers.IO) {
+            getThumbnailFile(entry)
+        }
+    }
+
+    /**
+     * Background pre-warm: generates thumbnails in display order so the first
+     * screenful (and nearby pages) are ready before the user scrolls to them.
+     * Bounded by the extraction semaphore, so it never floods the device.
+     *
+     * The window is capped: tar/7z scan the whole archive per entry, so warming
+     * every entry of a large archive would be quadratic background work. Warming
+     * a few screens is enough — the rest generate on demand when scrolled to.
+     */
+    private fun warmThumbnails(entries: List<MediaEntry>) {
+        warmJob?.cancel()
+        warmJob = viewModelScope.launch(Dispatchers.IO) {
+            // Wait for the bulk extraction so thumbnails decode local files
+            // instead of triggering per-entry re-decompression.
+            preExtractJob?.join()
+            for (i in 0 until minOf(entries.size, WARM_WINDOW)) {
+                val entry = entries[i]
+                if (entry.path !in attemptedThumbnails) {
+                    getThumbnailFile(entry)
+                }
+                yield()
+            }
+        }
     }
 
     private suspend fun generateThumbnail(entry: MediaEntry): File? {
@@ -297,8 +471,14 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 options.inJustDecodeBounds = false
                 val bmp = BitmapFactory.decodeFile(extracted.absolutePath, options)
                 if (bmp != null) {
-                    bmp.compress(Bitmap.CompressFormat.JPEG, 80, thumbFile.outputStream())
-                    bmp.recycle()
+                    // Enforce the hard size cap even if the sampled decode still
+                    // came out oversized (tall/wide images, edge cases) — the
+                    // stored thumbnail must never exceed THUMB_SIZE or every
+                    // thumb becomes full-res again.
+                    val thumb = scaleToFit(bmp, THUMB_SIZE)
+                    if (thumb !== bmp) bmp.recycle()
+                    thumb.compress(Bitmap.CompressFormat.JPEG, THUMB_QUALITY, thumbFile.outputStream())
+                    thumb.recycle()
                     thumbFile
                 } else {
                     // Decode failed — return null so the grid shows its placeholder
@@ -317,7 +497,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                     val frame = retriever.frameAtTime
                     if (frame != null) {
                         val scaled = Bitmap.createScaledBitmap(frame, THUMB_SIZE, THUMB_SIZE, true)
-                        scaled.compress(Bitmap.CompressFormat.JPEG, 80, thumbFile.outputStream())
+                        scaled.compress(Bitmap.CompressFormat.JPEG, THUMB_QUALITY, thumbFile.outputStream())
                         scaled.recycle()
                         frame.recycle()
                     }
@@ -328,6 +508,21 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 if (thumbFile.exists()) thumbFile else null
             }
         }
+    }
+
+    /**
+     * Downscales [source] so its longest edge is at most [maxSize] px while
+     * preserving aspect ratio. Returns the original bitmap if it already fits.
+     */
+    private fun scaleToFit(source: Bitmap, maxSize: Int): Bitmap {
+        if (source.width <= maxSize && source.height <= maxSize) return source
+        val scale = maxSize.toFloat() / maxOf(source.width, source.height)
+        return Bitmap.createScaledBitmap(
+            source,
+            (source.width * scale).toInt().coerceAtLeast(1),
+            (source.height * scale).toInt().coerceAtLeast(1),
+            true
+        )
     }
 
     fun openViewer(entry: MediaEntry) {
@@ -404,10 +599,15 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     private fun cleanupSession() {
         // Cancel in-flight work so no coroutine keeps extracting after the
         // session is torn down, then drop the maps.
+        preExtractJob?.cancel()
+        preExtractJob = null
+        warmJob?.cancel()
+        warmJob = null
         extractJobs.values.forEach { it.cancel() }
         thumbnailJobs.values.forEach { it.cancel() }
         extractJobs.clear()
         thumbnailJobs.clear()
+        extractDir = null
         sessionDir?.deleteRecursively()
         sessionDir = null
         tempArchiveFile = null
@@ -415,6 +615,8 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         currentFormat = ArchiveFormat.UNKNOWN
         extractedCache.clear()
         thumbnailCache.clear()
+        attemptedThumbnails.clear()
+        thumbnailStates.clear()
     }
 
     override fun onCleared() {
@@ -430,16 +632,30 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
          */
         const val THUMB_SIZE = 256
 
+        /** JPEG quality for the generated thumbnail files (0-100). */
+        private const val THUMB_QUALITY = 75
+
+        /** How many archive extractions may run concurrently during scroll. */
+        private const val MAX_CONCURRENT_EXTRACTIONS = 2
+
+        /**
+         * How many thumbnails the background pre-warm generates before stopping.
+         * ~3 screens of a 4-column grid; the rest generate on demand on scroll.
+         */
+        private const val WARM_WINDOW = 96
+
         fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
             val height = options.outHeight
             val width = options.outWidth
+            if (width <= reqWidth && height <= reqHeight) return 1
+            // Downsample on the DOMINANT axis: the classic both-dimensions
+            // variant returns 1 for tall/wide images (only one dimension too
+            // big), which produced full-resolution thumbnails. Scaling by the
+            // larger dimension keeps the longest edge near the target instead.
+            val target = maxOf(reqWidth, reqHeight)
             var inSampleSize = 1
-            if (height > reqHeight || width > reqWidth) {
-                val halfHeight = height / 2
-                val halfWidth = width / 2
-                while (halfHeight / inSampleSize >= reqHeight && halfWidth / inSampleSize >= reqWidth) {
-                    inSampleSize *= 2
-                }
+            while (maxOf(width / inSampleSize, height / inSampleSize) > target) {
+                inSampleSize *= 2
             }
             return inSampleSize
         }
