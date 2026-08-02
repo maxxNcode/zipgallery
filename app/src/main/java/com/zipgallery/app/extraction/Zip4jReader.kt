@@ -76,9 +76,78 @@ class Zip4jReader : ArchiveReader {
                 ZipFile(archiveFile)
             }
             val header = zipFile.getFileHeader(entryPath) ?: throw ArchiveReadException("Entry not found: $entryPath")
-            zipFile.extractFile(header, outputDir.absolutePath, safeName)
-            zipFile.close()
+            // Write to a unique .part name, then atomically rename, so the
+            // final path only ever exists as a complete file. Readers elsewhere
+            // (the bulk pass, the disk fast-path) use exists() as the "done"
+            // signal — this keeps them from caching a half-written file.
+            val part = File(outputDir, "$safeName.part${System.nanoTime()}")
+            part.delete()
+            try {
+                zipFile.extractFile(header, outputDir.absolutePath, part.name)
+            } catch (e: Exception) {
+                part.delete()
+                throw e
+            } finally {
+                zipFile.close()
+            }
+            atomicFinish(part, outFile)
             Result.success(outFile)
+        } catch (e: ZipException) {
+            val msg = e.message?.lowercase() ?: ""
+            if (msg.contains("password") || msg.contains("wrong key") || msg.contains("encrypted") || msg.contains("aes")) {
+                Result.failure(ArchiveEncryptedException("Wrong password or archive is encrypted", e))
+            } else {
+                Result.failure(ArchiveReadException("Failed to extract from ZIP: ${e.message}", e))
+            }
+        } catch (e: Exception) {
+            Result.failure(ArchiveReadException("Failed to extract from ZIP: ${e.message}", e))
+        }
+    }
+
+    /**
+     * Single-pass bulk extraction: opens the ZIP once, iterates the central
+     * directory, and extracts every requested entry. One open instead of N,
+     * which is much faster than calling [extractFile] per entry.
+     */
+    override fun extractEntries(
+        archiveFile: File,
+        entries: List<MediaEntry>,
+        password: String?,
+        outputDir: File
+    ): Result<Map<String, File>> {
+        return try {
+            val wanted = entries.map { it.path }.toHashSet()
+            val result = mutableMapOf<String, File>()
+            val zipFile = if (password != null) {
+                ZipFile(archiveFile, password.toCharArray())
+            } else {
+                ZipFile(archiveFile)
+            }
+            try {
+                for (header in zipFile.fileHeaders) {
+                    if (header.isDirectory) continue
+                    if (header.fileName !in wanted) continue
+                    val safeName = sanitizeFileName(header.fileName)
+                    val outFile = File(outputDir, safeName)
+                    if (!outFile.exists()) {
+                        // Unique .part + atomic rename (see extractFile) so a
+                        // concurrent fast-path read never sees a partial file.
+                        val part = File(outputDir, "$safeName.part${System.nanoTime()}")
+                        part.delete()
+                        try {
+                            zipFile.extractFile(header, outputDir.absolutePath, part.name)
+                        } catch (e: Exception) {
+                            part.delete()
+                            throw e
+                        }
+                        atomicFinish(part, outFile)
+                    }
+                    result[header.fileName] = outFile
+                }
+            } finally {
+                zipFile.close()
+            }
+            Result.success(result)
         } catch (e: ZipException) {
             val msg = e.message?.lowercase() ?: ""
             if (msg.contains("password") || msg.contains("wrong key") || msg.contains("encrypted") || msg.contains("aes")) {
@@ -94,5 +163,15 @@ class Zip4jReader : ArchiveReader {
     companion object {
         val IMAGE_EXTS = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif")
         val VIDEO_EXTS = setOf("mp4", "mkv", "webm", "avi", "3gp", "mov", "ts", "m4v")
+    }
+
+    private fun atomicFinish(part: File, outFile: File) {
+        if (!part.renameTo(outFile)) {
+            // Another writer finished first — the existing file is complete.
+            if (!outFile.exists()) {
+                part.copyTo(outFile, overwrite = true)
+            }
+            part.delete()
+        }
     }
 }
