@@ -26,7 +26,9 @@ import com.zipgallery.app.model.GridItem
 import com.zipgallery.app.model.MediaEntry
 import com.zipgallery.app.model.MediaType
 import com.zipgallery.app.model.SortType
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -47,6 +49,12 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     // cells + viewer) at once, so plain mutable maps could corrupt under race.
     private val extractedCache = ConcurrentHashMap<String, File>()
     private val thumbnailCache = ConcurrentHashMap<String, File>()
+
+    // Single-flight maps: every concurrent caller for the same entry awaits one
+    // shared Deferred (created atomically by computeIfAbsent), so a file is
+    // extracted / thumbnail generated exactly once even under heavy scroll.
+    private val extractJobs = ConcurrentHashMap<String, Deferred<File?>>()
+    private val thumbnailJobs = ConcurrentHashMap<String, Deferred<File?>>()
 
     private val zipReader: ArchiveReader = Zip4jReader()
     private val compressReader: ArchiveReader = CommonsCompressReader()
@@ -221,20 +229,34 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     suspend fun getExtractedFile(entry: MediaEntry): File? = withContext(Dispatchers.IO) {
         extractedCache[entry.path]?.let { return@withContext it }
-        val archive = tempArchiveFile ?: return@withContext null
-        try {
+        // computeIfAbsent is atomic: only the first caller creates the job, all
+        // others share it and await the same result.
+        val job = extractJobs.computeIfAbsent(entry.path) {
+            viewModelScope.async(Dispatchers.IO) { doExtract(entry) }
+        }
+        // try/finally guarantees the job leaves the map even if the deferred
+        // completes exceptionally, so a failure is never "sticky" — a later
+        // request can retry. Success is cached before removal so a racing new
+        // request hits the cache fast path instead of starting duplicate work.
+        val file = try {
+            job.await()
+        } finally {
+            extractJobs.remove(entry.path)
+        }
+        if (file != null) {
+            extractedCache[entry.path] = file
+        }
+        file
+    }
+
+    private suspend fun doExtract(entry: MediaEntry): File? {
+        val archive = tempArchiveFile ?: return null
+        return try {
             val reader = when (currentFormat) {
                 ArchiveFormat.ZIP -> zipReader
                 else -> compressReader
             }
-            val result = reader.extractFile(archive, entry.path, archivePassword, sessionDir!!)
-            result.fold(
-                onSuccess = { file ->
-                    extractedCache[entry.path] = file
-                    file
-                },
-                onFailure = { null }
-            )
+            reader.extractFile(archive, entry.path, archivePassword, sessionDir!!).getOrNull()
         } catch (e: Exception) {
             null
         }
@@ -242,18 +264,30 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     suspend fun getThumbnailFile(entry: MediaEntry): File? = withContext(Dispatchers.IO) {
         thumbnailCache[entry.path]?.let { return@withContext it }
-        val extracted = getExtractedFile(entry) ?: return@withContext null
+        val job = thumbnailJobs.computeIfAbsent(entry.path) {
+            viewModelScope.async(Dispatchers.IO) { generateThumbnail(entry) }
+        }
+        val file = try {
+            job.await()
+        } finally {
+            thumbnailJobs.remove(entry.path)
+        }
+        if (file != null) {
+            thumbnailCache[entry.path] = file
+        }
+        file
+    }
+
+    private suspend fun generateThumbnail(entry: MediaEntry): File? {
+        val extracted = getExtractedFile(entry) ?: return null
         val thumbDir = File(sessionDir, "thumbs")
         thumbDir.mkdirs()
         val safeName = sanitizeFileName(entry.path)
 
-        when (entry.type) {
+        return when (entry.type) {
             MediaType.IMAGE -> {
                 val thumbFile = File(thumbDir, safeName)
-                if (thumbFile.exists()) {
-                    thumbnailCache[entry.path] = thumbFile
-                    return@withContext thumbFile
-                }
+                if (thumbFile.exists()) return thumbFile
                 val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeFile(extracted.absolutePath, options)
                 options.inSampleSize = calculateInSampleSize(options, THUMB_SIZE, THUMB_SIZE)
@@ -265,21 +299,18 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 if (bmp != null) {
                     bmp.compress(Bitmap.CompressFormat.JPEG, 80, thumbFile.outputStream())
                     bmp.recycle()
-                    thumbnailCache[entry.path] = thumbFile
-                    return@withContext thumbFile
+                    thumbFile
+                } else {
+                    // Decode failed — return null so the grid shows its placeholder
+                    // instead of handing Coil the full-resolution file (which would
+                    // decode 100% quality and lag the UI).
+                    null
                 }
-                // Decode failed — return null so the grid shows its placeholder
-                // instead of handing Coil the full-resolution file (which would
-                // decode 100% quality and lag the UI).
-                null
             }
 
             MediaType.VIDEO -> {
                 val thumbFile = File(thumbDir, "vid_$safeName.jpg")
-                if (thumbFile.exists()) {
-                    thumbnailCache[entry.path] = thumbFile
-                    return@withContext thumbFile
-                }
+                if (thumbFile.exists()) return thumbFile
                 try {
                     val retriever = MediaMetadataRetriever()
                     retriever.setDataSource(extracted.absolutePath)
@@ -294,13 +325,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 } catch (e: Exception) {
                     android.util.Log.e("ZipGallery", "Error loading archive", e)
                 }
-                if (thumbFile.exists()) {
-                    thumbnailCache[entry.path] = thumbFile
-                    thumbFile
-                } else {
-                    // No frame captured — never fall back to the full video file.
-                    null
-                }
+                if (thumbFile.exists()) thumbFile else null
             }
         }
     }
@@ -377,6 +402,12 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun cleanupSession() {
+        // Cancel in-flight work so no coroutine keeps extracting after the
+        // session is torn down, then drop the maps.
+        extractJobs.values.forEach { it.cancel() }
+        thumbnailJobs.values.forEach { it.cancel() }
+        extractJobs.clear()
+        thumbnailJobs.clear()
         sessionDir?.deleteRecursively()
         sessionDir = null
         tempArchiveFile = null
@@ -398,9 +429,6 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
          * thumbnails (no upscaling or accidental full-res re-decodes).
          */
         const val THUMB_SIZE = 256
-
-        private val IMAGE_EXTS = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif")
-        private val VIDEO_EXTS = setOf("mp4", "mkv", "webm", "avi", "3gp", "mov", "ts", "m4v")
 
         fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
             val height = options.outHeight
