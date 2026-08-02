@@ -2,6 +2,7 @@ package com.zipgallery.app.viewmodel
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
@@ -22,13 +23,19 @@ import com.zipgallery.app.extraction.Zip4jReader
 import com.zipgallery.app.extraction.sanitizeFileName
 import com.zipgallery.app.model.AppScreen
 import com.zipgallery.app.model.AppThemeMode
+import com.zipgallery.app.model.ArchiveFolder
 import com.zipgallery.app.model.ArchiveFormat
 import com.zipgallery.app.model.FilterType
 import com.zipgallery.app.model.GalleryState
 import com.zipgallery.app.model.GridItem
 import com.zipgallery.app.model.MediaEntry
 import com.zipgallery.app.model.MediaType
+import com.zipgallery.app.model.RecentArchive
 import com.zipgallery.app.model.SortType
+import com.zipgallery.app.model.collectFolderPaths
+import com.zipgallery.app.model.parentFolderPath
+import org.json.JSONArray
+import org.json.JSONObject
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -117,6 +124,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             state = state.copy(themeMode = AppThemeMode.valueOf(savedTheme))
         }
         state = state.copy(useDynamicColor = prefs.getBoolean("dynamic_color", true))
+        state = state.copy(recentArchives = loadRecentArchives())
     }
 
     fun setThemeMode(mode: AppThemeMode) {
@@ -131,7 +139,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     val filteredEntries: List<MediaEntry>
         get() {
-            var list = state.entries
+            var list = state.entries.filter { parentFolderPath(it.path) == state.currentFolder }
             list = when (state.filterType) {
                 FilterType.ALL -> list
                 FilterType.IMAGES -> list.filter { it.type == MediaType.IMAGE }
@@ -152,14 +160,27 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         }
 
     /**
-     * Grid layout memoized with [derivedStateOf]: the filter/sort pipeline only
-     * recomputes when [state] actually changes (load, filter, sort, search),
-     * never on every scroll-frame recomposition.
+     * Direct sub-folders of the current folder, in display order. A folder
+     * path belongs here when its parent is the current folder ("" = archive
+     * root), e.g. "Vacation/Beach" -> parent "Vacation".
+     */
+    val currentFolderFolders: List<ArchiveFolder>
+        get() = state.folderPaths
+            .filter { parentFolderPath(it) == state.currentFolder }
+            .sortedBy { it.lowercase() }
+            .map { path -> ArchiveFolder(name = path.substringAfterLast('/'), path = path) }
+
+    /**
+     * Grid layout memoized with [derivedStateOf]: the folder/filter/sort
+     * pipeline only recomputes when [state] actually changes (load, navigate,
+     * filter, sort, search), never on every scroll-frame recomposition.
      */
     val gridItems: List<GridItem> by derivedStateOf { buildGridItems() }
 
     private fun buildGridItems(): List<GridItem> {
         val items = mutableListOf<GridItem>()
+        val folders = currentFolderFolders
+        folders.forEach { items.add(GridItem.Folder(it)) }
         val all = filteredEntries
         val images = all.filter { it.type == MediaType.IMAGE }
         val videos = all.filter { it.type == MediaType.VIDEO }
@@ -189,6 +210,34 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         resetScroll()
     }
 
+    // ----- Folder browsing -------------------------------------------------
+
+    /** Enters a folder; empty string = archive root. */
+    fun openFolder(path: String) {
+        if (path == state.currentFolder) return
+        state = state.copy(currentFolder = path)
+        // viewerIndex lives in its own mutableIntStateOf (not GalleryState), so
+        // it must be reset explicitly — state.copy(viewerIndex=...) would no-op.
+        viewerIndex = 0
+        resetScroll()
+    }
+
+    /** Goes up one level from the current folder (root stays root). */
+    fun navigateUp() {
+        val parent = parentFolderPath(state.currentFolder)
+        state = state.copy(currentFolder = parent)
+        viewerIndex = 0
+        resetScroll()
+    }
+
+    /** The breadcrumb segments of the current folder (empty = at root). */
+    fun currentFolderBreadcrumbs(): List<String> {
+        val folder = state.currentFolder
+        if (folder.isEmpty()) return emptyList()
+        val parts = folder.split('/')
+        return parts.runningFold("") { acc, part -> if (acc.isEmpty()) part else "$acc/$part" }
+    }
+
     fun saveScrollState(index: Int, offset: Int) {
         scrollIndex = index
         scrollOffset = offset
@@ -205,6 +254,20 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val context = getApplication<Application>()
+                // Keep access to this document across restarts so it can appear
+                // in the dashboard's recents list. Read+write so edits to ZIP
+                // archives can be saved back to the same document.
+                try {
+                    context.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    )
+                } catch (_: SecurityException) {
+                    // Provider may not support persistable grants — recents for
+                    // this document just won't survive an app restart.
+                } catch (_: IllegalArgumentException) {
+                    // Some providers reject non-persistable grants this way.
+                }
                 cleanupSession()
                 sessionDir = File(context.cacheDir, "zipg_${System.nanoTime()}")
                 sessionDir!!.mkdirs()
@@ -242,10 +305,20 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             val result = reader.readEntries(file, password)
             result.fold(
                 onSuccess = { entries ->
+                    // Explicit directory entries + implicit folders derived from
+                    // entry paths (many ZIPs store "folder/photo.jpg" with no
+                    // "folder/" directory entry) — without both, media inside
+                    // folders would be invisible at the root.
+                    val folders = collectFolderPaths(
+                        entries,
+                        reader.readFolders(file, password).getOrDefault(emptyList())
+                    )
                     archivePassword = password
                     val displayName = uri?.lastPathSegment ?: file.name
                     state = state.copy(
                         entries = entries,
+                        folderPaths = folders,
+                        currentFolder = "",
                         isLoading = false,
                         screen = AppScreen.Gallery,
                         currentArchiveUri = uri,
@@ -259,6 +332,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                     )
                     viewerIndex = 0
                     resetScroll()
+                    upsertRecentArchive(uri, displayName)
                     // Extract the whole archive to disk once (single pass, so
                     // 7z/tar don't re-scan per entry), then pre-generate
                     // thumbnails from the local files.
@@ -554,6 +628,234 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    // ----- Recents (dashboard) ----------------------------------------------
+
+    private fun upsertRecentArchive(uri: Uri?, name: String) {
+        if (uri == null) return
+        val updated = listOf(RecentArchive(uri = uri, name = name, openedAt = System.currentTimeMillis())) +
+            state.recentArchives.filterNot { it.uri == uri }
+        val capped = updated.take(MAX_RECENTS)
+        state = state.copy(recentArchives = capped)
+        persistRecentArchives(capped)
+    }
+
+    private fun persistRecentArchives(recents: List<RecentArchive>) {
+        try {
+            val array = JSONArray()
+            recents.forEach { recent ->
+                array.put(
+                    JSONObject()
+                        .put("uri", recent.uri.toString())
+                        .put("name", recent.name)
+                        .put("openedAt", recent.openedAt)
+                )
+            }
+            prefs.edit().putString("recent_archives", array.toString()).apply()
+        } catch (_: Exception) {
+            // Corrupt serialization — never block the UI for recents.
+        }
+    }
+
+    private fun loadRecentArchives(): List<RecentArchive> {
+        val raw = prefs.getString("recent_archives", null) ?: return emptyList()
+        return try {
+            val array = JSONArray(raw)
+            (0 until array.length()).mapNotNull { i ->
+                val obj = array.getJSONObject(i)
+                val uri = Uri.parse(obj.optString("uri"))
+                if (uri.toString().isBlank()) null
+                else RecentArchive(uri, obj.optString("name", "Archive"), obj.optLong("openedAt", 0L))
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    // ----- Archive editing (ZIP only) ---------------------------------------
+
+    /**
+     * Whether the currently open archive can be edited (add files / folders).
+     * Only ZIP is supported in place — 7z/tar need a full re-rewrite and RAR
+     * has no write support.
+     */
+    val supportsWrite: Boolean
+        get() = currentFormat == ArchiveFormat.ZIP
+
+    /**
+     * Adds the picked files into the current folder of the open ZIP archive,
+     * saves the result back to the original document, and refreshes the grid.
+     * Runs fully off the main thread.
+     */
+    fun addFilesToArchive(uris: List<Uri>) {
+        if (!supportsWrite) {
+            state = state.copy(infoMessage = "Adding files is only supported for ZIP archives")
+            return
+        }
+        if (uris.isEmpty()) return
+        state = state.copy(isLoading = true)
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val archive = tempArchiveFile
+                if (archive == null) {
+                    state = state.copy(isLoading = false, error = "No archive open")
+                    return@launch
+                }
+                val context = getApplication<Application>()
+                val reader = zipReader as Zip4jReader
+                // zip4j APPENDS rather than replaces, so adding a file whose
+                // entry path already exists would create a duplicate entry.
+                // Reject collisions up front (also against folder paths).
+                val existingPaths = (state.entries.map { it.path } + state.folderPaths).toHashSet()
+                val additions = mutableListOf<Pair<String, File>>()
+                var skippedCount = 0
+                var savedBack = false
+                try {
+                    for (uri in uris) {
+                        val name = uri.lastPathSegment?.substringAfterLast('/') ?: "file_${System.nanoTime()}"
+                        val safeName = sanitizeFileName(name)
+                        val entryPath = if (state.currentFolder.isEmpty()) safeName
+                                        else "${state.currentFolder}/$safeName"
+                        if (entryPath in existingPaths) {
+                            skippedCount++
+                            continue
+                        }
+                        val staged = File(context.cacheDir, "zipg_add_${System.nanoTime()}_$safeName")
+                        context.contentResolver.openInputStream(uri)?.use { input ->
+                            staged.outputStream().use { output -> input.copyTo(output) }
+                        } ?: continue
+                        additions += entryPath to staged
+                        // Also dedupe against names picked elsewhere in the same
+                        // multi-select batch.
+                        existingPaths.add(entryPath)
+                    }
+                    if (additions.isEmpty()) {
+                        state = state.copy(
+                            isLoading = false,
+                            infoMessage = if (skippedCount > 0)
+                                "No files added — those names already exist in this folder"
+                            else
+                                "No files were selected"
+                        )
+                        return@launch
+                    }
+                    reader.addFiles(archive, additions, archivePassword).getOrThrow()
+                    savedBack = writeBackToOriginal(archive)
+                } finally {
+                    additions.forEach { it.second.delete() }
+                }
+                reloadEntriesFromDisk()
+                state = state.copy(
+                    isLoading = false,
+                    infoMessage = buildString {
+                        append("Added ${additions.size} file(s)")
+                        if (skippedCount > 0) append(", skipped $skippedCount (already exist)")
+                        if (!savedBack) append(" — but could not save back to the original file")
+                    }
+                )
+            } catch (e: Exception) {
+                android.util.Log.e("ZipGallery", "Error adding files", e)
+                state = state.copy(isLoading = false, error = "Failed to add files: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Creates an empty folder inside the current folder of the open ZIP
+     * archive and refreshes the grid.
+     */
+    fun createFolder(name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty() || trimmed.contains('/')) {
+            state = state.copy(infoMessage = "Folder name can't be empty or contain '/'")
+            return
+        }
+        if (!supportsWrite) {
+            state = state.copy(infoMessage = "Folders can only be added to ZIP archives")
+            return
+        }
+        state = state.copy(isLoading = true)
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val archive = tempArchiveFile
+                if (archive == null) {
+                    state = state.copy(isLoading = false, error = "No archive open")
+                    return@launch
+                }
+                val entryPath = if (state.currentFolder.isEmpty()) trimmed
+                                else "${state.currentFolder}/$trimmed"
+                (zipReader as Zip4jReader).createFolder(archive, entryPath, archivePassword).getOrThrow()
+                val savedBack = writeBackToOriginal(archive)
+                reloadEntriesFromDisk()
+                state = state.copy(
+                    isLoading = false,
+                    infoMessage = if (savedBack) "Folder created"
+                                  else "Folder created — but could not save back to the original file"
+                )
+            } catch (e: Exception) {
+                android.util.Log.e("ZipGallery", "Error creating folder", e)
+                state = state.copy(isLoading = false, error = "Failed to create folder: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Saves the edited temp archive back over the original document. Returns
+     * false (without throwing) when the provider can't be written — the edit
+     * is kept for this session but won't survive reopening the file.
+     */
+    private fun writeBackToOriginal(archive: File): Boolean {
+        val uri = state.currentArchiveUri ?: return false
+        val context = getApplication<Application>()
+        return try {
+            val output = context.contentResolver.openOutputStream(uri, "wt")
+                ?: return false
+            output.use { o ->
+                archive.inputStream().use { i -> i.copyTo(o) }
+            }
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** Re-reads entries + folders from the (edited) temp archive on disk. */
+    private fun reloadEntriesFromDisk() {
+        val archive = tempArchiveFile ?: return
+        // The archive on disk changed — drop cached extracted files, thumbnails,
+        // and attempt markers so a newly-added file that happens to collide with
+        // an existing path never renders stale content. Caches rebuild on demand.
+        extractedCache.clear()
+        thumbnailCache.clear()
+        attemptedThumbnails.clear()
+        thumbnailStates.clear()
+        extractJobs.values.forEach { it.cancel() }
+        thumbnailJobs.values.forEach { it.cancel() }
+        extractJobs.clear()
+        thumbnailJobs.clear()
+        val reader = if (currentFormat == ArchiveFormat.ZIP) zipReader else compressReader
+        val entries = reader.readEntries(archive, archivePassword).getOrDefault(state.entries)
+        // Same implicit-folder derivation as the initial load so edits that add
+        // files into (existing) folders keep the breadcrumbs/grid consistent.
+        val folders = collectFolderPaths(
+            entries,
+            reader.readFolders(archive, archivePassword).getOrDefault(state.folderPaths)
+        )
+        // Keep browsing inside the current folder if it still exists.
+        val folderStillExists = state.currentFolder.isEmpty() ||
+            folders.any { it == state.currentFolder || it.startsWith(state.currentFolder + "/") }
+        state = state.copy(
+            entries = entries,
+            folderPaths = folders,
+            currentFolder = if (folderStillExists) state.currentFolder else ""
+        )
+        // Warm thumbnails for the newly-added files in the background.
+        warmThumbnails(entries)
+    }
+
+    fun clearInfoMessage() {
+        state = state.copy(infoMessage = null)
+    }
+
     fun backToGallery() {
         state = state.copy(screen = AppScreen.Gallery)
     }
@@ -625,6 +927,9 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     companion object {
+        /** How many recent archives the dashboard keeps. */
+        private const val MAX_RECENTS = 8
+
         /**
          * Thumbnail edge length in px — plenty for a ~120dp grid cell. Shared
          * with the UI so Coil's decode request always matches the generated

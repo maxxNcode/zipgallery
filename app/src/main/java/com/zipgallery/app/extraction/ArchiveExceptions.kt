@@ -2,6 +2,7 @@ package com.zipgallery.app.extraction
 
 class ArchiveReadException(message: String, cause: Throwable? = null) : Exception(message, cause)
 class ArchiveEncryptedException(message: String, cause: Throwable? = null) : Exception(message, cause)
+class ArchiveWriteException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 fun sanitizeFileName(name: String): String {
     val sanitized = name

@@ -2,6 +2,8 @@ package com.zipgallery.app.ui.screens
 
 import android.app.Activity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -30,18 +32,29 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.CreateNewFolder
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.outlined.ImageSearch
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -62,8 +75,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -83,6 +96,7 @@ import coil.request.ImageRequest
 import coil.size.Size
 import kotlinx.coroutines.flow.sample
 import com.zipgallery.app.model.AppScreen
+import com.zipgallery.app.model.ArchiveFolder
 import com.zipgallery.app.model.FilterType
 import com.zipgallery.app.model.GridItem
 import com.zipgallery.app.model.MediaEntry
@@ -104,6 +118,16 @@ fun GalleryScreen(
     val items = viewModel.gridItems
     val gridState = rememberLazyGridState()
     var showSearch by rememberSaveable { mutableStateOf(false) }
+    var showAddMenu by remember { mutableStateOf(false) }
+    var showNewFolderDialog by remember { mutableStateOf(false) }
+
+    val addFilesLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel.addFilesToArchive(uris)
+        }
+    }
 
     // Save scroll position at most every ~100ms instead of every frame.
     // snapshotFlow emits on every scroll delta; sample() collapses that burst
@@ -175,12 +199,61 @@ fun GalleryScreen(
                         onClose = { showSearch = false; viewModel.setSearchQuery("") }
                     )
                 }
+                FolderBreadcrumbs(
+                    segments = viewModel.currentFolderBreadcrumbs(),
+                    onNavigateTo = { viewModel.openFolder(it) },
+                    onNavigateUp = { viewModel.navigateUp() }
+                )
                 FilterBar(
                     current = state.filterType,
                     currentSort = state.sortType,
                     onSelectFilter = { viewModel.setFilter(it) },
                     onSelectSort = { viewModel.setSortType(it) }
                 )
+            }
+        },
+        floatingActionButton = {
+            if (viewModel.supportsWrite) {
+                // The dropdown menu must be anchored to a Box wrapping the FAB
+                // so it opens from the button's position (bottom-end), not as a
+                // free-floating popup at the content origin.
+                Box {
+                    FloatingActionButton(
+                        // material3 1.2.x FloatingActionButton has no enabled
+                        // param — guard the click instead so edits in progress
+                        // can't be interrupted by a second add/new-folder tap.
+                        onClick = { if (!state.isLoading) showAddMenu = true },
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.semantics { contentDescription = "Add files or folder" }
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "Add files or folder")
+                    }
+                    DropdownMenu(
+                        expanded = showAddMenu,
+                        onDismissRequest = { showAddMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Add files") },
+                            leadingIcon = { Icon(Icons.Default.UploadFile, contentDescription = null) },
+                            onClick = {
+                                showAddMenu = false
+                                // Images + videos only — the grid only renders
+                                // media entries, so other files would be added
+                                // to the archive but silently invisible.
+                                addFilesLauncher.launch(arrayOf("image/*", "video/*"))
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("New folder") },
+                            leadingIcon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null) },
+                            onClick = {
+                                showAddMenu = false
+                                showNewFolderDialog = true
+                            }
+                        )
+                    }
+                }
             }
         }
     ) { padding ->
@@ -200,9 +273,16 @@ fun GalleryScreen(
                     )
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        text = if (state.searchQuery.isNotBlank()) "No results for \"${state.searchQuery}\""
-                               else if (state.entries.isEmpty()) "No images or videos found."
-                               else "No ${state.filterType.name.lowercase()} found.",
+                        text = when {
+                            state.searchQuery.isNotBlank() ->
+                                "No results for \"${state.searchQuery}\""
+                            state.entries.isEmpty() ->
+                                "No images or videos found."
+                            state.filterType == FilterType.ALL ->
+                                "No images or videos in this folder."
+                            else ->
+                                "No ${state.filterType.name.lowercase()} in this folder."
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
@@ -221,6 +301,7 @@ fun GalleryScreen(
                     viewModel = viewModel,
                     selectedPath = selectedPath,
                     onItemClick = { viewModel.selectEntry(it) },
+                    onFolderClick = { viewModel.openFolder(it) },
                     modifier = Modifier.weight(0.9f)
                 )
                 VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -244,10 +325,43 @@ fun GalleryScreen(
                 gridState = gridState,
                 viewModel = viewModel,
                 onItemClick = { onItemClick(it) },
+                onFolderClick = { viewModel.openFolder(it) },
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding)
             )
+        }
+
+        if (showNewFolderDialog) {
+            NewFolderDialog(
+                onDismiss = { showNewFolderDialog = false },
+                onConfirm = { name ->
+                    showNewFolderDialog = false
+                    viewModel.createFolder(name)
+                }
+            )
+        }
+
+        // Busy overlay while files are being written into the archive (add
+        // files / new folder) — the grid stays visible but interaction is
+        // blocked until the write-back + refresh completes.
+        if (state.isLoading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.4f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = "Updating archive...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
         }
     }
 }
@@ -297,7 +411,8 @@ private fun MediaGrid(
     viewModel: GalleryViewModel,
     onItemClick: (MediaEntry) -> Unit,
     modifier: Modifier = Modifier,
-    selectedPath: String? = null
+    selectedPath: String? = null,
+    onFolderClick: (String) -> Unit = {}
 ) {
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 120.dp),
@@ -316,19 +431,28 @@ private fun MediaGrid(
             key = { item ->
                 when (item) {
                     is GridItem.Header -> "header_${item.type.name}"
+                    is GridItem.Folder -> "folder_${item.folder.path}"
                     is GridItem.Media -> item.entry.path
                 }
             },
-            // Headers span the full row and have a totally different layout
-            // from media cells. Without a distinct contentType, LazyVerticalGrid
-            // can't recycle the item node across types during fast flings and
-            // rebuilds layouts on every scroll pass.
+            // Folders, headers, and media cells each have distinct layouts.
+            // Without a proper contentType, LazyVerticalGrid can't recycle the
+            // item node across types during fast flings and rebuilds layouts on
+            // every scroll pass.
             contentType = { item ->
-                if (item is GridItem.Header) "header" else "media"
+                when (item) {
+                    is GridItem.Folder -> "folder"
+                    is GridItem.Header -> "header"
+                    is GridItem.Media -> "media"
+                }
             }
         ) { item ->
             when (item) {
                 is GridItem.Header -> SectionHeader(item.type, item.count)
+                is GridItem.Folder -> FolderCell(
+                    folder = item.folder,
+                    onClick = { onFolderClick(item.folder.path) }
+                )
                 is GridItem.Media -> MediaThumbnail(
                     entry = item.entry,
                     viewModel = viewModel,
@@ -338,6 +462,136 @@ private fun MediaGrid(
             }
         }
     }
+}
+
+/**
+ * Horizontal breadcrumb row shown below the top bar when browsing inside a
+ * folder: [Root] / Vacation / Beach — each segment jumps back to that level.
+ */
+@Composable
+private fun FolderBreadcrumbs(
+    segments: List<String>,
+    onNavigateTo: (String) -> Unit,
+    onNavigateUp: () -> Unit
+) {
+    if (segments.isEmpty()) return
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 12.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        TextButton(
+            onClick = { onNavigateTo("") },
+            contentPadding = PaddingValues(horizontal = 8.dp)
+        ) {
+            Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("Root", style = MaterialTheme.typography.labelLarge)
+        }
+        segments.forEach { segment ->
+            Icon(
+                Icons.AutoMirrored.Filled.ArrowForward,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            TextButton(
+                onClick = { onNavigateTo(segment) },
+                contentPadding = PaddingValues(horizontal = 8.dp)
+            ) {
+                Text(
+                    text = segment.substringAfterLast('/'),
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        Spacer(Modifier.weight(1f))
+        IconButton(onClick = onNavigateUp) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Up one level")
+        }
+    }
+}
+
+/**
+ * A directory cell in the grid: tap to enter the folder.
+ */
+@Composable
+private fun FolderCell(
+    folder: ArchiveFolder,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .aspectRatio(1f)
+            .clip(MaterialTheme.shapes.small)
+            .background(MaterialTheme.colorScheme.secondaryContainer)
+            .clickable(onClick = onClick)
+            .semantics {
+                contentDescription = "Folder ${folder.name}"
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(
+                imageVector = Icons.Default.Folder,
+                contentDescription = null,
+                modifier = Modifier.size(40.dp),
+                tint = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = folder.name,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 8.dp)
+            )
+        }
+    }
+}
+
+/**
+ * M3 alert dialog for naming a new folder inside the archive.
+ */
+@Composable
+private fun NewFolderDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("New folder") },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Folder name") },
+                singleLine = true,
+                supportingText = { Text("Created inside the current folder") },
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        shape = MaterialTheme.shapes.extraLarge,
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(name) },
+                enabled = name.isNotBlank()
+            ) {
+                Text("Create")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
 }
 
 @Composable

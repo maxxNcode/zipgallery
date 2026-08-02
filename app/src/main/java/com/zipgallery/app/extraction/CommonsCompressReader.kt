@@ -35,6 +35,46 @@ class CommonsCompressReader : ArchiveReader {
         throw ArchiveReadException("Failed to read archive: ${e.message}", e)
     }
 
+    override fun readFolders(archiveFile: File, password: String?): Result<List<String>> = runCatching {
+        val name = archiveFile.name.lowercase()
+        val folders = mutableListOf<String>()
+        when {
+            name.endsWith(".7z") -> {
+                val channel: SeekableByteChannel = RandomAccessFile(archiveFile, "r").channel
+                SevenZFile(channel).use { sevenZ ->
+                    while (true) {
+                        val entry: SevenZArchiveEntry = sevenZ.nextEntry ?: break
+                        if (entry.isDirectory) folders += entry.name.trimEnd('/')
+                    }
+                }
+            }
+            name.endsWith(".tar") || name.endsWith(".tar.gz") || name.endsWith(".tgz") ||
+                name.endsWith(".tar.bz2") || name.endsWith(".tar.xz") -> {
+                val fis = FileInputStream(archiveFile)
+                val bis = BufferedInputStream(fis)
+                val tin = when {
+                    archiveFile.name.endsWith(".gz") || archiveFile.name.endsWith(".tgz") ->
+                        TarArchiveInputStream(GzipCompressorInputStream(bis))
+                    archiveFile.name.endsWith(".bz2") ->
+                        TarArchiveInputStream(BZip2CompressorInputStream(bis))
+                    archiveFile.name.endsWith(".xz") ->
+                        TarArchiveInputStream(XZCompressorInputStream(bis))
+                    else -> TarArchiveInputStream(bis)
+                }
+                tin.use { input ->
+                    while (true) {
+                        val entry: ArchiveEntry = input.nextEntry ?: break
+                        if (entry.isDirectory) folders += entry.name.trimEnd('/')
+                    }
+                }
+            }
+            else -> throw ArchiveReadException("Unsupported format: $name")
+        }
+        folders.filter { it.isNotEmpty() }
+    }.recoverCatching { e ->
+        throw ArchiveReadException("Failed to read folders: ${e.message}", e)
+    }
+
     override fun extractFile(archiveFile: File, entryPath: String, password: String?, outputDir: File): Result<File> = runCatching {
         val safeName = sanitizeFileName(entryPath)
         val outFile = File(outputDir, safeName)

@@ -100,6 +100,13 @@ private fun AppContent(viewModel: GalleryViewModel) {
         }
     }
 
+    LaunchedEffect(state.infoMessage) {
+        state.infoMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearInfoMessage()
+        }
+    }
+
     // Paint the app background from the active M3 color scheme so the content
     // and text roles always come from the same palette — the window background
     // (which follows the system) can never mismatch the Compose theme again.
@@ -126,7 +133,9 @@ private fun AppContent(viewModel: GalleryViewModel) {
             when (screen) {
                 AppScreen.Main -> MainScreen(
                     isLoading = state.isLoading,
+                    recentArchives = state.recentArchives,
                     onArchiveSelected = { uri -> viewModel.loadArchive(uri) },
+                    onOpenRecent = { uri -> viewModel.loadArchive(uri) },
                     onOpenSettings = { viewModel.openSettings() }
                 )
 

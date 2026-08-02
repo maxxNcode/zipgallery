@@ -30,4 +30,18 @@ interface ArchiveReader {
     }
 
     val supportsEncryption: Boolean get() = false
+
+    /**
+     * Directory paths inside the archive (for folder browsing). Default: no
+     * folders. Readers that know directories must override.
+     */
+    fun readFolders(archiveFile: File, password: String?): Result<List<String>> =
+        Result.success(emptyList())
+
+    /**
+     * Whether this format supports writing (adding entries / folders) in place.
+     * Only ZIP is editable — 7z/tar would need a full re-rewrite and RAR has
+     * no write support at all.
+     */
+    val supportsWrite: Boolean get() = false
 }
