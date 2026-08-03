@@ -1,8 +1,11 @@
 package com.zipgallery.app.ui.screens
 
+import android.app.Activity
+import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,6 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
@@ -57,8 +61,12 @@ fun MainScreen(
     onOpenRecent: (Uri) -> Unit,
     onOpenSettings: () -> Unit
 ) {
+    // Custom contract: the stock OpenDocument only grants READ (+ persistable),
+    // but the gallery writes edits back to the same document — without
+    // FLAG_GRANT_WRITE_URI_PERMISSION, openOutputStream() throws a
+    // SecurityException and "save back to original file" silently fails.
     val launcher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
+        contract = remember { OpenDocumentWritable() }
     ) { uri ->
         if (uri != null) {
             onArchiveSelected(uri)
@@ -263,4 +271,29 @@ private val openedAtFormatter = SimpleDateFormat("MMM d, HH:mm", Locale.getDefau
 private fun formatOpenedAt(timestamp: Long): String {
     if (timestamp <= 0L) return "Recently"
     return openedAtFormatter.format(Date(timestamp))
+}
+
+/**
+ * ACTION_OPEN_DOCUMENT picker that also requests WRITE permission on the picked
+ * document, so ZIP edits can be saved back over the original file. The stock
+ * [ActivityResultContract] for OpenDocument only grants READ + persistable,
+ * which makes every write-back fail with a SecurityException.
+ */
+private class OpenDocumentWritable : ActivityResultContract<Array<String>, Uri?>() {
+    override fun createIntent(context: Context, input: Array<String>): Intent {
+        return Intent(Intent.ACTION_OPEN_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("*/*")
+            .putExtra(Intent.EXTRA_MIME_TYPES, input)
+            .addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+            )
+    }
+
+    override fun parseResult(resultCode: Int, intent: Intent?): Uri? {
+        if (resultCode != Activity.RESULT_OK) return null
+        return intent?.data
+    }
 }

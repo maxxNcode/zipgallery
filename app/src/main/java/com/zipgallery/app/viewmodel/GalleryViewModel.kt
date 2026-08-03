@@ -813,7 +813,11 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 archive.inputStream().use { i -> i.copyTo(o) }
             }
             true
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            // Log the real reason — usually a SecurityException because the
+            // document was picked without FLAG_GRANT_WRITE_URI_PERMISSION, or
+            // the provider simply doesn't support writing.
+            android.util.Log.e("ZipGallery", "Could not save archive back to $uri", e)
             false
         }
     }

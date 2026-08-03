@@ -88,7 +88,7 @@ fun SettingsScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             SectionCard(title = "Appearance") {
                 Row(
@@ -107,7 +107,8 @@ fun SettingsScreen(
                         Icon(
                             Icons.Default.Palette,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            tint = if (state.useDynamicColor) MaterialTheme.colorScheme.primary
+                                   else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Column {
                             Text("Dynamic color", style = MaterialTheme.typography.bodyLarge)
@@ -162,12 +163,23 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.Storage, contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("Cache size: $cacheSizeText", style = MaterialTheme.typography.bodyMedium)
+                        Icon(
+                            Icons.Default.Storage,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Column {
+                            Text("Storage cache", style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                cacheSizeText,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                     TextButton(
                         onClick = {
@@ -176,8 +188,11 @@ fun SettingsScreen(
                         },
                         enabled = cacheSizeText != "0 B"
                     ) {
-                        Icon(Icons.Default.CleaningServices, contentDescription = "Clear cache",
-                            modifier = Modifier.semantics { contentDescription = "Clear cache" })
+                        Icon(
+                            Icons.Default.CleaningServices,
+                            contentDescription = "Clear cache",
+                            modifier = Modifier.semantics { contentDescription = "Clear cache" }
+                        )
                         Text("Clear")
                     }
                 }
@@ -205,7 +220,12 @@ private fun SectionCard(title: String, content: @Composable () -> Unit) {
         )
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.semantics { contentDescription = "Settings section: $title" }
+            )
             Spacer(Modifier.height(8.dp))
             content()
         }
