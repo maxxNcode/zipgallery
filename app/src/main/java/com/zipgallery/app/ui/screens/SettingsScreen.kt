@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -95,7 +96,11 @@ fun SettingsScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(vertical = 4.dp)
-                        .semantics { contentDescription = "Toggle dynamic color" },
+                        .toggleable(
+                            value = state.useDynamicColor,
+                            role = Role.Switch,
+                            onValueChange = { viewModel.setDynamicColor(it) }
+                        ),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -247,7 +252,7 @@ private fun ThemeOption(
                 onClick = onClick,
                 role = Role.RadioButton
             )
-            .padding(vertical = 6.dp)
+            .padding(vertical = 10.dp)
             .semantics { contentDescription = "Theme option: $label" },
         verticalAlignment = Alignment.CenterVertically
     ) {
