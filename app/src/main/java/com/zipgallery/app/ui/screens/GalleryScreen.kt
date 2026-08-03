@@ -7,6 +7,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -128,6 +130,9 @@ fun GalleryScreen(
             viewModel.addFilesToArchive(uris)
         }
     }
+
+    // Item pending deletion confirmation (long-press on a media cell or folder).
+    var pendingDelete by remember { mutableStateOf<GridItem?>(null) }
 
     // Save scroll position at most every ~100ms instead of every frame.
     // snapshotFlow emits on every scroll delta; sample() collapses that burst
@@ -302,6 +307,8 @@ fun GalleryScreen(
                     selectedPath = selectedPath,
                     onItemClick = { viewModel.selectEntry(it) },
                     onFolderClick = { viewModel.openFolder(it) },
+                    onItemLongClick = { pendingDelete = GridItem.Media(it) },
+                    onFolderLongClick = { pendingDelete = GridItem.Folder(it) },
                     modifier = Modifier.weight(0.9f)
                 )
                 VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -326,6 +333,8 @@ fun GalleryScreen(
                 viewModel = viewModel,
                 onItemClick = { onItemClick(it) },
                 onFolderClick = { viewModel.openFolder(it) },
+                onItemLongClick = { pendingDelete = GridItem.Media(it) },
+                onFolderLongClick = { pendingDelete = GridItem.Folder(it) },
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding)
@@ -338,6 +347,27 @@ fun GalleryScreen(
                 onConfirm = { name ->
                     showNewFolderDialog = false
                     viewModel.createFolder(name)
+                }
+            )
+        }
+
+        val pending = pendingDelete
+        if (pending != null) {
+            DeleteConfirmDialog(
+                label = when (pending) {
+                    is GridItem.Folder -> pending.folder.name
+                    is GridItem.Media -> pending.entry.name
+                    is GridItem.Header -> null
+                },
+                onDismiss = { pendingDelete = null },
+                onConfirm = {
+                    val paths = when (pending) {
+                        is GridItem.Folder -> listOf(pending.folder.path)
+                        is GridItem.Media -> listOf(pending.entry.path)
+                        is GridItem.Header -> emptyList()
+                    }
+                    pendingDelete = null
+                    viewModel.deleteFromArchive(paths)
                 }
             )
         }
@@ -412,7 +442,9 @@ private fun MediaGrid(
     onItemClick: (MediaEntry) -> Unit,
     modifier: Modifier = Modifier,
     selectedPath: String? = null,
-    onFolderClick: (String) -> Unit = {}
+    onFolderClick: (String) -> Unit = {},
+    onItemLongClick: (MediaEntry) -> Unit = {},
+    onFolderLongClick: (ArchiveFolder) -> Unit = {}
 ) {
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 120.dp),
@@ -451,13 +483,15 @@ private fun MediaGrid(
                 is GridItem.Header -> SectionHeader(item.type, item.count)
                 is GridItem.Folder -> FolderCell(
                     folder = item.folder,
-                    onClick = { onFolderClick(item.folder.path) }
+                    onClick = { onFolderClick(item.folder.path) },
+                    onLongClick = { onFolderLongClick(item.folder) }
                 )
                 is GridItem.Media -> MediaThumbnail(
                     entry = item.entry,
                     viewModel = viewModel,
                     selected = selectedPath != null && item.entry.path == selectedPath,
-                    onClick = { onItemClick(item.entry) }
+                    onClick = { onItemClick(item.entry) },
+                    onLongClick = { onItemLongClick(item.entry) }
                 )
             }
         }
@@ -520,17 +554,19 @@ private fun FolderBreadcrumbs(
 /**
  * A directory cell in the grid: tap to enter the folder.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FolderCell(
     folder: ArchiveFolder,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = {}
 ) {
     Box(
         modifier = Modifier
             .aspectRatio(1f)
             .clip(MaterialTheme.shapes.small)
             .background(MaterialTheme.colorScheme.secondaryContainer)
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .semantics {
                 contentDescription = "Folder ${folder.name}"
             },
@@ -587,6 +623,34 @@ private fun NewFolderDialog(
             ) {
                 Text("Create")
             }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+private fun DeleteConfirmDialog(
+    label: String?,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Delete") },
+        text = {
+            Text(
+                if (label != null) {
+                    "Delete \"$label\" from this archive? This can't be undone."
+                } else {
+                    "Delete these items from this archive? This can't be undone."
+                }
+            )
+        },
+        shape = MaterialTheme.shapes.extraLarge,
+        confirmButton = {
+            Button(onClick = onConfirm) { Text("Delete") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancel") }
@@ -707,12 +771,14 @@ private fun SectionHeader(type: MediaType, count: Int) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MediaThumbnail(
     entry: MediaEntry,
     viewModel: GalleryViewModel,
     selected: Boolean = false,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = {}
 ) {
     // Read this cell's OWN thumbnail state (per-cell State in the ViewModel).
     // Scrolling back shows the cached thumb instantly, and a thumbnail landing
@@ -737,7 +803,7 @@ private fun MediaThumbnail(
                     Modifier
                 }
             )
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .semantics {
                 contentDescription = "${entry.type.name.lowercase()} ${entry.name}"
             }

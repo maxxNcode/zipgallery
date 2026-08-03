@@ -54,6 +54,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
 import androidx.core.content.FileProvider
 import androidx.media3.common.MediaItem
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -439,6 +440,7 @@ private fun ZoomableImage(
     }
 }
 
+@androidx.annotation.OptIn(UnstableApi::class)
 @Composable
 private fun VideoPage(
     entry: MediaEntry,

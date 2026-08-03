@@ -14,8 +14,7 @@ class ArchiveFormatTest {
 
     @Test
     fun `fromFileName returns UNKNOWN for RAR files`() {
-        // RAR has no dedicated enum entry; the file picker still offers the
-        // rar mime type and it is handled through the generic reader.
+        // RAR is not advertised or supported by any reader.
         assertEquals(ArchiveFormat.UNKNOWN, ArchiveFormat.fromFileName("data.rar"))
         assertEquals(ArchiveFormat.UNKNOWN, ArchiveFormat.fromFileName("archive.RAR"))
     }
@@ -39,8 +38,8 @@ class ArchiveFormatTest {
     fun `mimeTypes includes all supported types`() {
         val types = ArchiveFormat.mimeTypes()
         assert(types.contains("application/zip"))
-        assert(types.contains("application/x-rar-compressed"))
         assert(types.contains("application/x-7z-compressed"))
         assert(types.contains("application/octet-stream"))
+        assert(!types.contains("application/x-rar-compressed"))
     }
 }

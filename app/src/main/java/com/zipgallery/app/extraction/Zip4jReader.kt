@@ -276,6 +276,43 @@ class Zip4jReader : ArchiveReader {
         }
     }
 
+    /**
+     * Removes the given entry paths (media files and/or folders) from the
+     * archive. For a folder path, also removes every entry beneath it. The
+     * batch goes through one [removeFiles] pass so a multi-delete is a single
+     * write to the zip's central directory.
+     */
+    override fun deleteEntries(
+        archiveFile: File,
+        paths: List<String>,
+        password: String?
+    ): Result<Unit> {
+        return try {
+            val zipFile = if (password != null) ZipFile(archiveFile, password.toCharArray()) else ZipFile(archiveFile)
+            try {
+                // Expand folder paths to their directory entries + all nested
+                // entries, so "Vacation/Beach" deletes "Vacation/Beach/" and
+                // everything below it, not just the empty folder entry.
+                val toDelete = zipFile.fileHeaders
+                    .map { it.fileName }
+                    .filter { name ->
+                        paths.any { path ->
+                            val p = path.trimEnd('/')
+                            name == p || name == "$p/" || name.startsWith("$p/")
+                        }
+                    }
+                if (toDelete.isNotEmpty()) {
+                    zipFile.removeFiles(toDelete)
+                }
+                Result.success(Unit)
+            } finally {
+                zipFile.close()
+            }
+        } catch (e: Exception) {
+            Result.failure(ArchiveWriteException("Failed to delete entries from ZIP: ${e.message}", e))
+        }
+    }
+
     companion object {
         val IMAGE_EXTS = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif")
         val VIDEO_EXTS = setOf("mp4", "mkv", "webm", "avi", "3gp", "mov", "ts", "m4v")

@@ -191,7 +191,7 @@ fun SettingsScreen(
                             viewModel.clearCache()
                             cacheSizeText = "0 B"
                         },
-                        enabled = cacheSizeText != "0 B"
+                        enabled = viewModel.hasActiveSession.not() && cacheSizeText != "0 B"
                     ) {
                         Icon(
                             Icons.Default.CleaningServices,
@@ -200,6 +200,13 @@ fun SettingsScreen(
                         )
                         Text("Clear")
                     }
+                }
+                if (viewModel.hasActiveSession) {
+                    Text(
+                        "Close the open archive before clearing its cache.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
 

@@ -40,8 +40,21 @@ interface ArchiveReader {
 
     /**
      * Whether this format supports writing (adding entries / folders) in place.
-     * Only ZIP is editable — 7z/tar would need a full re-rewrite and RAR has
-     * no write support at all.
+     * Only ZIP is editable — 7z/tar would need a full re-rewrite.
      */
     val supportsWrite: Boolean get() = false
+
+    /**
+     * Removes the given entry paths from the archive (media files and/or
+     * folders). A folder path removes the directory entry itself AND every
+     * entry beneath it. Only writable formats override this; the default
+     * reports it as unsupported.
+     */
+    fun deleteEntries(
+        archiveFile: File,
+        paths: List<String>,
+        password: String?
+    ): Result<Unit> = Result.failure(
+        ArchiveWriteException("Deleting entries is not supported for this format")
+    )
 }

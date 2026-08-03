@@ -137,27 +137,36 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         prefs.edit().putBoolean("dynamic_color", enabled).apply()
     }
 
-    val filteredEntries: List<MediaEntry>
-        get() {
-            var list = state.entries.filter { parentFolderPath(it.path) == state.currentFolder }
-            list = when (state.filterType) {
-                FilterType.ALL -> list
-                FilterType.IMAGES -> list.filter { it.type == MediaType.IMAGE }
-                FilterType.VIDEOS -> list.filter { it.type == MediaType.VIDEO }
-            }
-            if (state.searchQuery.isNotBlank()) {
-                val q = state.searchQuery.lowercase()
-                list = list.filter { it.name.lowercase().contains(q) }
-            }
-            list = when (state.sortType) {
-                SortType.NAME_ASC -> list.sortedBy { it.name.lowercase() }
-                SortType.NAME_DESC -> list.sortedByDescending { it.name.lowercase() }
-                SortType.SIZE_DESC -> list.sortedByDescending { it.size }
-                SortType.SIZE_ASC -> list.sortedBy { it.size }
-                SortType.TYPE -> list.sortedBy { it.type.name }
-            }
-            return list
+    /**
+     * Filtered + sorted media entries for the current folder, memoized with
+     * [derivedStateOf] like [gridItems]. The viewer reads this on every
+     * recomposition (page swipes, two-pane selection), so an eager getter that
+     * re-sorts on each read made large archives jank in the viewer — deriving
+     * it recomputes only when [state] (entries/folder/filter/search/sort) actually
+     * changes.
+     */
+    val filteredEntries: List<MediaEntry> by derivedStateOf { buildFilteredEntries() }
+
+    private fun buildFilteredEntries(): List<MediaEntry> {
+        var list = state.entries.filter { parentFolderPath(it.path) == state.currentFolder }
+        list = when (state.filterType) {
+            FilterType.ALL -> list
+            FilterType.IMAGES -> list.filter { it.type == MediaType.IMAGE }
+            FilterType.VIDEOS -> list.filter { it.type == MediaType.VIDEO }
         }
+        if (state.searchQuery.isNotBlank()) {
+            val q = state.searchQuery.lowercase()
+            list = list.filter { it.name.lowercase().contains(q) }
+        }
+        list = when (state.sortType) {
+            SortType.NAME_ASC -> list.sortedBy { it.name.lowercase() }
+            SortType.NAME_DESC -> list.sortedByDescending { it.name.lowercase() }
+            SortType.SIZE_DESC -> list.sortedByDescending { it.size }
+            SortType.SIZE_ASC -> list.sortedBy { it.size }
+            SortType.TYPE -> list.sortedBy { it.type.name }
+        }
+        return list
+    }
 
     /**
      * Direct sub-folders of the current folder, in display order. A folder
@@ -275,7 +284,17 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
                 val format = ArchiveFormat.fromUri(uri)
                 val ext = if (format == ArchiveFormat.UNKNOWN) "zip" else format.extensions.first()
-                val tempFile = File(sessionDir, "archive.$ext")
+                // Keep the REAL file name (sanitized) instead of renaming to
+                // "archive.<ext>": the Commons Compress reader dispatches on the
+                // file NAME (.tar.gz vs .tar vs .tgz). Renaming a .tar.gz to
+                // archive.tar would feed raw gzip bytes into the plain-tar path
+                // and fail. Fall back to a neutral name only when the original
+                // name can't be used.
+                val originalName = uri.lastPathSegment?.substringAfterLast('/')?.trim()
+                val tempName = originalName
+                    ?.takeIf { it.isNotBlank() && ArchiveFormat.fromFileName(it) == format }
+                    ?: "archive.$ext"
+                val tempFile = File(sessionDir, sanitizeFileName(tempName))
                 context.contentResolver.openInputStream(uri)?.use { input ->
                     tempFile.outputStream().use { output ->
                         input.copyTo(output)
@@ -675,8 +694,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     /**
      * Whether the currently open archive can be edited (add files / folders).
-     * Only ZIP is supported in place — 7z/tar need a full re-rewrite and RAR
-     * has no write support.
+     * Only ZIP is supported in place — 7z/tar need a full re-rewrite.
      */
     val supportsWrite: Boolean
         get() = currentFormat == ArchiveFormat.ZIP
@@ -860,6 +878,40 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         state = state.copy(infoMessage = null)
     }
 
+    /**
+     * Deletes the given entry paths from the open ZIP archive (media files
+     * and/or folders; folder paths remove their whole subtree), saves the
+     * result back to the original document, and refreshes the grid.
+     */
+    fun deleteFromArchive(paths: List<String>) {
+        if (paths.isEmpty()) return
+        if (!supportsWrite) {
+            state = state.copy(infoMessage = "Deleting is only supported for ZIP archives")
+            return
+        }
+        state = state.copy(isLoading = true)
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val archive = tempArchiveFile
+                if (archive == null) {
+                    state = state.copy(isLoading = false, error = "No archive open")
+                    return@launch
+                }
+                (zipReader as Zip4jReader).deleteEntries(archive, paths, archivePassword).getOrThrow()
+                val savedBack = writeBackToOriginal(archive)
+                reloadEntriesFromDisk()
+                state = state.copy(
+                    isLoading = false,
+                    infoMessage = if (savedBack) "Deleted ${paths.size} item(s)"
+                                  else "Deleted — but could not save back to the original file"
+                )
+            } catch (e: Exception) {
+                android.util.Log.e("ZipGallery", "Error deleting entries", e)
+                state = state.copy(isLoading = false, error = "Failed to delete: ${e.message}")
+            }
+        }
+    }
+
     fun backToGallery() {
         state = state.copy(screen = AppScreen.Gallery)
     }
@@ -897,6 +949,15 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             val dir = sessionDir ?: return 0L
             return dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
         }
+
+    /**
+     * Whether an archive session (temp file + extracted files + thumbnails)
+     * is currently active. Clearing the cache while one is active would tear
+     * down the very files the open archive relies on, silently breaking the
+     * gallery — so the UI must not offer a destructive clear then.
+     */
+    val hasActiveSession: Boolean
+        get() = sessionDir != null && !state.entries.isEmpty()
 
     fun clearCache() {
         cleanupSession()

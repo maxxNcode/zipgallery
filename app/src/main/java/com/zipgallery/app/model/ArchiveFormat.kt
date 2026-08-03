@@ -28,7 +28,7 @@ enum class ArchiveFormat(val extensions: Set<String>) {
         fun mimeTypes(): Array<String> = arrayOf(
             "application/zip",
             "application/x-zip-compressed",
-            "application/x-rar-compressed",
+            
             "application/x-7z-compressed",
             "application/x-tar",
             "application/gzip",

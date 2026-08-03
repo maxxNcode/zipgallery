@@ -123,7 +123,7 @@ fun MainScreen(
                 Spacer(Modifier.height(8.dp))
 
                 Text(
-                    text = "Browse images and videos inside ZIP, RAR, and 7Z files\nseamlessly, just like a gallery app.",
+                    text = "Browse images and videos inside ZIP, 7Z, and TAR files\nseamlessly, just like a gallery app.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center
@@ -161,7 +161,7 @@ fun MainScreen(
                     Spacer(Modifier.height(8.dp))
 
                     Text(
-                        text = "ZIP  ·  RAR  ·  7Z  ·  TAR",
+                        text = "ZIP  ·  7Z  ·  TAR",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -266,11 +266,12 @@ private fun RecentArchiveCard(
     }
 }
 
-private val openedAtFormatter = SimpleDateFormat("MMM d, HH:mm", Locale.getDefault())
-
 private fun formatOpenedAt(timestamp: Long): String {
     if (timestamp <= 0L) return "Recently"
-    return openedAtFormatter.format(Date(timestamp))
+    // Create per call so a locale change takes effect immediately (lint:
+    // caching Locale.getDefault() in a static field goes stale at runtime).
+    val formatter = SimpleDateFormat("MMM d, HH:mm", Locale.getDefault())
+    return formatter.format(Date(timestamp))
 }
 
 /**
