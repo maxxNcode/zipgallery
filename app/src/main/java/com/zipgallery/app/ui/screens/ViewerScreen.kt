@@ -38,6 +38,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -71,10 +72,19 @@ import com.zipgallery.app.model.MediaType
 import com.zipgallery.app.util.formatFileSize
 import com.zipgallery.app.viewmodel.GalleryViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.abs
+
+/** Double-tap zooms to this scale; tapping again returns to 1x. */
+private const val DOUBLE_TAP_ZOOM = 2.5f
+
+/** Max gap between two taps to count as a double-tap (also the delay applied
+ * to single-tap actions so the first tap of a double-tap can be cancelled). */
+private const val DOUBLE_TAP_MS = 300L
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -452,6 +462,31 @@ private fun ZoomableImage(
     var scale by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
+    val scope = rememberCoroutineScope()
+    var zoomJob by remember { mutableStateOf<Job?>(null) }
+    var singleTapJob by remember { mutableStateOf<Job?>(null) }
+    var lastTapTime by remember { mutableLongStateOf(0L) }
+
+    fun runDoubleTapZoom() {
+        val target = if (scale > 1.01f) 1f else DOUBLE_TAP_ZOOM
+        zoomJob?.cancel()
+        zoomJob = scope.launch {
+            val from = scale
+            val steps = 12
+            for (i in 1..steps) {
+                scale = from + (target - from) * (i / steps.toFloat())
+                if (target <= 1f) {
+                    offsetX = 0f
+                    offsetY = 0f
+                }
+                delay(8)
+            }
+            if (target <= 1f) {
+                offsetX = 0f
+                offsetY = 0f
+            }
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -476,6 +511,7 @@ private fun ZoomableImage(
                         }
 
                         if (zooming) {
+                            zoomJob?.cancel()
                             val newScale = (scale * zoom).coerceIn(1f, 5f)
                             scale = newScale
                             if (newScale > 1f) {
@@ -495,7 +531,20 @@ private fun ZoomableImage(
                     } while (changes.any { it.pressed })
 
                     if (!zooming && abs(totalPanX) < 10f && abs(totalPanY) < 10f) {
-                        onTap()
+                        val now = System.currentTimeMillis()
+                        if (now - lastTapTime < DOUBLE_TAP_MS) {
+                            // Second tap: cancel the pending single-tap (which
+                            // would have toggled the overlay) and zoom instead.
+                            singleTapJob?.cancel()
+                            runDoubleTapZoom()
+                        } else {
+                            lastTapTime = now
+                            singleTapJob?.cancel()
+                            singleTapJob = scope.launch {
+                                delay(DOUBLE_TAP_MS)
+                                onTap()
+                            }
+                        }
                     }
                 }
             }
