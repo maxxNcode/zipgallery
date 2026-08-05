@@ -564,9 +564,13 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeFile(extracted.absolutePath, options)
                 options.inSampleSize = calculateInSampleSize(options, THUMB_SIZE, THUMB_SIZE)
-                // RGB_565 halves memory vs ARGB_8888; plenty for a grid cell and
-                // avoids the alpha channel, which we don't need for a JPEG thumb.
-                options.inPreferredConfig = Bitmap.Config.RGB_565
+                // RGB_565 halves memory vs ARGB_8888; plenty for a grid cell.
+                // But GIF/PNG/WebP carry alpha (and often higher color depth) —
+                // decoding them as RGB_565 would wreck transparency with
+                // visible dark halos and banding, so keep full color for those.
+                options.inPreferredConfig = if (
+                    entry.path.substringAfterLast('.', "").lowercase() in TRANSPARENT_EXTS
+                ) Bitmap.Config.ARGB_8888 else Bitmap.Config.RGB_565
                 options.inJustDecodeBounds = false
                 val bmp = BitmapFactory.decodeFile(extracted.absolutePath, options)
                 if (bmp != null) {
@@ -1025,6 +1029,9 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
         /** JPEG quality for the generated thumbnail files (0-100). */
         private const val THUMB_QUALITY = 75
+
+        /** Formats that can carry alpha/transparency — decode at full color depth. */
+        private val TRANSPARENT_EXTS = setOf("png", "gif", "webp")
 
         /** How many archive extractions may run concurrently during scroll. */
         private const val MAX_CONCURRENT_EXTRACTIONS = 2
