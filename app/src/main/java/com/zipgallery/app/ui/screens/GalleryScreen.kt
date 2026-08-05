@@ -817,7 +817,9 @@ private fun MediaThumbnail(
                     // No crossfade: during fast scroll, dozens of transitions
                     // would stack up and add GPU/recomposition work.
                     .size(Size(GalleryViewModel.THUMB_SIZE, GalleryViewModel.THUMB_SIZE))
-                    .memoryCacheKey(entry.path)
+                    // Session-scoped key: the same entry path in a different
+                    // archive must never hit the previous archive's cached thumb.
+                    .memoryCacheKey(viewModel.thumbnailCacheKey(entry.path))
                     .build(),
                 contentDescription = entry.name,
                 modifier = Modifier.fillMaxSize(),

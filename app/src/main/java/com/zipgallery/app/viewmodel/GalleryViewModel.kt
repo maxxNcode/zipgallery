@@ -70,6 +70,10 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     private var tempArchiveFile: File? = null
     private var archivePassword: String? = null
     private var currentFormat: ArchiveFormat = ArchiveFormat.UNKNOWN
+    // Identifies the current archive session. Coil's memory/disk cache keys
+    // are prefixed with it so two different archives that both contain
+    // "photo.jpg" can never serve each other's thumbnails.
+    private var sessionToken: String = ""
     // Concurrent maps: thumbnail requests fire from many IO coroutines (grid
     // cells + viewer) at once, so plain mutable maps could corrupt under race.
     private val extractedCache = ConcurrentHashMap<String, File>()
@@ -273,6 +277,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 sessionDir = File(context.cacheDir, "zipg_${System.nanoTime()}")
                 sessionDir!!.mkdirs()
                 extractDir = File(sessionDir, "extracted").apply { mkdirs() }
+                sessionToken = sessionDir!!.name
 
                 val format = ArchiveFormat.fromUri(uri)
                 val ext = if (format == ArchiveFormat.UNKNOWN) "zip" else format.extensions.first()
@@ -500,6 +505,15 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
      */
     fun thumbnailStateFor(path: String): State<File?> =
         thumbnailStates.computeIfAbsent(path) { mutableStateOf(thumbnailCache[path]) }
+
+    /**
+     * Coil cache key for an entry's thumbnail. Prefixed with the session token
+     * so entries with the same path in DIFFERENT archives never collide in
+     * Coil's app-wide memory/disk cache (reopening a different archive must
+     * not show the previous archive's stale thumb).
+     */
+    fun thumbnailCacheKey(path: String): String =
+        if (sessionToken.isEmpty()) path else "$sessionToken/$path"
 
     /**
      * Ensures a thumbnail for [entry] is available (or being generated) without
