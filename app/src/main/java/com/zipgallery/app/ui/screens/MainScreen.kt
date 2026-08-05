@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.foundation.layout.Arrangement
@@ -43,10 +44,13 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -55,6 +59,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.zipgallery.app.model.ArchiveFormat
 import com.zipgallery.app.model.RecentArchive
+import com.zipgallery.app.util.formatFileSize
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -376,6 +383,20 @@ private fun RecentArchiveCard(
     val format = ArchiveFormat.fromFileName(recent.name)
     val (icon, container, content) = formatVisuals(format)
 
+    // File size from the document provider (OpenableColumns.SIZE), off the
+    // main thread. Providers may omit it — the row just omits the size.
+    val context = LocalContext.current
+    val sizeText by produceState<String?>(null, recent.uri) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                context.contentResolver.query(recent.uri, arrayOf(OpenableColumns.SIZE), null, null, null)
+                    ?.use { cursor ->
+                        if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else null
+                    }
+            }.getOrNull()?.takeIf { it > 0 }?.let { formatFileSize(it) }
+        }
+    }
+
     Card(
         onClick = onClick,
         colors = CardDefaults.cardColors(
@@ -426,6 +447,13 @@ private fun RecentArchiveCard(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    if (sizeText != null) {
+                        Text(
+                            text = "  ·  $sizeText",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
             Icon(
