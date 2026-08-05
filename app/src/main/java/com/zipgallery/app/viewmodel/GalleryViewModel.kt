@@ -33,6 +33,7 @@ import com.zipgallery.app.model.MediaType
 import com.zipgallery.app.model.RecentArchive
 import com.zipgallery.app.model.SortType
 import com.zipgallery.app.model.collectFolderPaths
+import com.zipgallery.app.model.filterAndSortEntries
 import com.zipgallery.app.model.parentFolderPath
 import org.json.JSONArray
 import org.json.JSONObject
@@ -147,26 +148,14 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
      */
     val filteredEntries: List<MediaEntry> by derivedStateOf { buildFilteredEntries() }
 
-    private fun buildFilteredEntries(): List<MediaEntry> {
-        var list = state.entries.filter { parentFolderPath(it.path) == state.currentFolder }
-        list = when (state.filterType) {
-            FilterType.ALL -> list
-            FilterType.IMAGES -> list.filter { it.type == MediaType.IMAGE }
-            FilterType.VIDEOS -> list.filter { it.type == MediaType.VIDEO }
-        }
-        if (state.searchQuery.isNotBlank()) {
-            val q = state.searchQuery.lowercase()
-            list = list.filter { it.name.lowercase().contains(q) }
-        }
-        list = when (state.sortType) {
-            SortType.NAME_ASC -> list.sortedBy { it.name.lowercase() }
-            SortType.NAME_DESC -> list.sortedByDescending { it.name.lowercase() }
-            SortType.SIZE_DESC -> list.sortedByDescending { it.size }
-            SortType.SIZE_ASC -> list.sortedBy { it.size }
-            SortType.TYPE -> list.sortedBy { it.type.name }
-        }
-        return list
-    }
+    private fun buildFilteredEntries(): List<MediaEntry> =
+        filterAndSortEntries(
+            entries = state.entries,
+            currentFolder = state.currentFolder,
+            filterType = state.filterType,
+            searchQuery = state.searchQuery,
+            sortType = state.sortType
+        )
 
     /**
      * Direct sub-folders of the current folder, in display order. A folder
@@ -188,8 +177,11 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     private fun buildGridItems(): List<GridItem> {
         val items = mutableListOf<GridItem>()
-        val folders = currentFolderFolders
-        folders.forEach { items.add(GridItem.Folder(it)) }
+        // While searching, results span the whole archive — folder cells would
+        // be meaningless (they're scoped to the current folder), so hide them.
+        if (state.searchQuery.isBlank()) {
+            currentFolderFolders.forEach { items.add(GridItem.Folder(it)) }
+        }
         val all = filteredEntries
         val images = all.filter { it.type == MediaType.IMAGE }
         val videos = all.filter { it.type == MediaType.VIDEO }
