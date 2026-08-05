@@ -589,10 +589,13 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                     retriever.setDataSource(extracted.absolutePath)
                     val frame = retriever.frameAtTime
                     if (frame != null) {
-                        val scaled = Bitmap.createScaledBitmap(frame, THUMB_SIZE, THUMB_SIZE, true)
+                        // scaleToFit (same as images) keeps the frame's aspect
+                        // ratio — a forced square createScaledBitmap used to
+                        // distort every non-square video's stored thumbnail.
+                        val scaled = scaleToFit(frame, THUMB_SIZE)
+                        if (scaled !== frame) frame.recycle()
                         scaled.compress(Bitmap.CompressFormat.JPEG, THUMB_QUALITY, thumbFile.outputStream())
                         scaled.recycle()
-                        frame.recycle()
                     }
                     retriever.release()
                 } catch (e: Exception) {
@@ -801,6 +804,18 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 }
                 val entryPath = if (state.currentFolder.isEmpty()) trimmed
                                 else "${state.currentFolder}/$trimmed"
+                // Reject collisions up front: an existing folder (or a file
+                // whose parent path equals the new folder) would otherwise
+                // create duplicate directory entries in the ZIP.
+                val alreadyExists = state.folderPaths.contains(entryPath) ||
+                    state.entries.any { it.path == entryPath || parentFolderPath(it.path) == entryPath }
+                if (alreadyExists) {
+                    state = state.copy(
+                        isLoading = false,
+                        infoMessage = "A folder named \"$trimmed\" already exists here"
+                    )
+                    return@launch
+                }
                 (zipReader as Zip4jReader).createFolder(archive, entryPath, archivePassword).getOrThrow()
                 val savedBack = writeBackToOriginal(archive)
                 reloadEntriesFromDisk()

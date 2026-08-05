@@ -61,12 +61,16 @@ fun SettingsScreen(
     onBack: () -> Unit
 ) {
     val state = viewModel.state
-    var cacheSizeText by remember { mutableStateOf("calculating...") }
+    // -1 = still calculating. Storing the raw bytes (not the formatted string)
+    // keeps the Clear button's enabled state a real numeric check — a formatted
+    // text comparison like != "0 B" breaks the moment the cache size lands on a
+    // different unit's "0" representation (e.g. "0 KB" for 1023 B + 1).
+    var cacheSizeBytes by remember { mutableStateOf(-1L) }
 
     LaunchedEffect(Unit) {
-        val size = withContext(Dispatchers.IO) { viewModel.cacheSize }
-        cacheSizeText = formatSize(size)
+        cacheSizeBytes = withContext(Dispatchers.IO) { viewModel.cacheSize }
     }
+    val cacheSizeText = if (cacheSizeBytes < 0) "calculating..." else formatSize(cacheSizeBytes)
 
     Scaffold(
         topBar = {
@@ -189,9 +193,9 @@ fun SettingsScreen(
                     TextButton(
                         onClick = {
                             viewModel.clearCache()
-                            cacheSizeText = "0 B"
+                            cacheSizeBytes = 0L
                         },
-                        enabled = viewModel.hasActiveSession.not() && cacheSizeText != "0 B"
+                        enabled = viewModel.hasActiveSession.not() && cacheSizeBytes > 0
                     ) {
                         Icon(
                             Icons.Default.CleaningServices,
