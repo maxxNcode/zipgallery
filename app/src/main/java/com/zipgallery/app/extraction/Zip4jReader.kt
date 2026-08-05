@@ -27,31 +27,36 @@ class Zip4jReader : ArchiveReader {
             val entries = mutableListOf<MediaEntry>()
 
             var hasEncrypted = false
-            for (header in headers) {
-                if (header.isEncrypted) {
-                    hasEncrypted = true
-                }
-                if (!header.isDirectory) {
-                    val name = header.fileName
-                    val ext = name.substringAfterLast('.', "").lowercase()
-                    val type = when {
-                        ext in IMAGE_EXTS -> MediaType.IMAGE
-                        ext in VIDEO_EXTS -> MediaType.VIDEO
-                        else -> null
+            try {
+                for (header in headers) {
+                    if (header.isEncrypted) {
+                        hasEncrypted = true
                     }
-                    if (type != null) {
-                        entries.add(
-                            MediaEntry(
-                                name = name.substringAfterLast('/'),
-                                path = name,
-                                type = type,
-                                size = header.uncompressedSize
+                    if (!header.isDirectory) {
+                        val name = header.fileName
+                        val ext = name.substringAfterLast('.', "").lowercase()
+                        val type = when {
+                            ext in IMAGE_EXTS -> MediaType.IMAGE
+                            ext in VIDEO_EXTS -> MediaType.VIDEO
+                            else -> null
+                        }
+                        if (type != null) {
+                            entries.add(
+                                MediaEntry(
+                                    name = name.substringAfterLast('/'),
+                                    path = name,
+                                    type = type,
+                                    size = header.uncompressedSize
+                                )
                             )
-                        )
+                        }
                     }
                 }
+            } finally {
+                // zip4j holds an open file handle from the constructor onward —
+                // a failure mid-iteration must not leak it.
+                zipFile.close()
             }
-            zipFile.close()
 
             if (hasEncrypted && password == null) {
                 return Result.failure(ArchiveEncryptedException("Archive is password-protected"))

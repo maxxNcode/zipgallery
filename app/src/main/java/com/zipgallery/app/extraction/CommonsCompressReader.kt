@@ -119,14 +119,15 @@ class CommonsCompressReader : ArchiveReader {
             else -> TarArchiveInputStream(bis)
         }
 
-        var entry: ArchiveEntry? = tin.nextEntry
-        while (entry != null) {
-            if (!entry.isDirectory) {
-                addMediaEntry(entry.name, entry.size, entries)
+        tin.use {
+            var entry: ArchiveEntry? = tin.nextEntry
+            while (entry != null) {
+                if (!entry.isDirectory) {
+                    addMediaEntry(entry.name, entry.size, entries)
+                }
+                entry = tin.nextEntry
             }
-            entry = tin.nextEntry
         }
-        tin.close()
     }
 
     private fun addMediaEntry(name: String, size: Long, entries: MutableList<MediaEntry>) {
@@ -293,23 +294,25 @@ class CommonsCompressReader : ArchiveReader {
             else -> TarArchiveInputStream(bis)
         }
 
-        var entry: ArchiveEntry? = tin.nextEntry
-        while (entry != null) {
-            if (entry.name == entryPath) {
-                FileOutputStream(outFile).use { os ->
-                    val buffer = ByteArray(8192)
-                    var len: Int
-                    while (tin.read(buffer).also { len = it } != -1) {
-                        os.write(buffer, 0, len)
+        // use {} guarantees the whole stream chain closes on every path,
+        // including a mid-scan exception or a missing entry.
+        tin.use {
+            var entry: ArchiveEntry? = tin.nextEntry
+            while (entry != null) {
+                if (entry.name == entryPath) {
+                    FileOutputStream(outFile).use { os ->
+                        val buffer = ByteArray(8192)
+                        var len: Int
+                        while (tin.read(buffer).also { len = it } != -1) {
+                            os.write(buffer, 0, len)
+                        }
                     }
+                    return
                 }
-                tin.close()
-                return
+                entry = tin.nextEntry
             }
-            entry = tin.nextEntry
+            throw ArchiveReadException("Entry not found in tar: $entryPath")
         }
-        tin.close()
-        throw ArchiveReadException("Entry not found in tar: $entryPath")
     }
 
     companion object {
