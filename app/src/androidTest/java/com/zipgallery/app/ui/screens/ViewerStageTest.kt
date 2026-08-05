@@ -31,7 +31,9 @@ class ViewerStageTest {
     private fun setViewer(
         showBack: Boolean = true,
         isVideo: Boolean = false,
-        fileName: String? = "photo.jpg"
+        fileName: String? = "photo.jpg",
+        fileSize: Long? = null,
+        onDelete: (() -> Unit)? = null
     ) {
         composeRule.setContent {
             ZipGalleryTheme {
@@ -43,7 +45,9 @@ class ViewerStageTest {
                     onBack = if (showBack) ({ }) else null,
                     isVideo = isVideo,
                     onShare = {},
-                    applyInsets = false
+                    applyInsets = false,
+                    fileSize = fileSize,
+                    onDelete = onDelete
                 ) { toggleOverlay ->
                     Box(
                         modifier = Modifier
@@ -86,6 +90,31 @@ class ViewerStageTest {
         setViewer(fileName = "photo.jpg")
         composeRule.onNodeWithText("photo.jpg").assertIsDisplayed()
         composeRule.onNodeWithText("1 / 2").assertIsDisplayed()
+    }
+
+    @Test
+    fun pageCounter_showsFileSize_whenProvided() {
+        setViewer(fileSize = 2L * 1024 * 1024)
+        composeRule.onNodeWithText("1 / 2 · 2.0 MB").assertIsDisplayed()
+    }
+
+    @Test
+    fun deleteButton_renders_whenCallbackProvided() {
+        setViewer(onDelete = {})
+        composeRule.onNodeWithContentDescription("Delete file").assertIsDisplayed()
+    }
+
+    @Test
+    fun deleteButton_isAbsent_withoutCallback() {
+        setViewer(onDelete = null)
+        composeRule.onNodeWithContentDescription("Delete file").assertDoesNotExist()
+    }
+
+    @Test
+    fun deleteButton_renders_forVideos() {
+        setViewer(isVideo = true, onDelete = {})
+        composeRule.onNodeWithContentDescription("Delete file").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Share file").assertIsDisplayed()
     }
 
     @Test

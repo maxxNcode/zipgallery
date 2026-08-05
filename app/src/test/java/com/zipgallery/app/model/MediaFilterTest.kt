@@ -44,8 +44,8 @@ class MediaFilterTest {
 
     @Test
     fun `sort by size desc applies within current folder`() {
-        val result = filterAndSortEntries(entries, "", FilterType.ALL, "", SortType.SIZE_DESC)
-        assertEquals(listOf("wide.mkv", "clip.mp4", "photo.jpg", "portrait.png"), result.map { it.name })
+        val result = filterAndSortEntries(entries, "Vacation/Beach", FilterType.ALL, "", SortType.SIZE_DESC)
+        assertEquals(listOf("clip.mp4", "photo.jpg"), result.map { it.name })
     }
 
     @Test

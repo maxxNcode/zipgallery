@@ -9,7 +9,9 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -19,7 +21,10 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
@@ -27,6 +32,7 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -62,6 +68,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.zipgallery.app.model.MediaEntry
 import com.zipgallery.app.model.MediaType
+import com.zipgallery.app.util.formatFileSize
 import com.zipgallery.app.viewmodel.GalleryViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -139,6 +146,18 @@ fun ViewerContent(
         }
     }
 
+    // After a delete shrinks the entry list, clamp the shared selection to the
+    // new last item; if the archive runs out of media, leave the viewer.
+    LaunchedEffect(entries.size) {
+        if (entries.isEmpty()) {
+            onBack?.invoke()
+        } else if (viewModel.viewerIndex > entries.lastIndex) {
+            viewModel.syncViewerPage(entries.lastIndex)
+        }
+    }
+
+    var pendingDelete by remember { mutableStateOf<MediaEntry?>(null) }
+
     val shareCurrent: () -> Unit = {
         currentEntry?.let { entry ->
             scope.launch {
@@ -165,12 +184,16 @@ fun ViewerContent(
     ) {
         ViewerStage(
             fileName = currentEntry?.name,
+            fileSize = entries.getOrNull(pagerState.currentPage)?.size,
             page = pagerState.currentPage + 1,
             pageCount = entries.size,
             showBack = showBack,
             onBack = onBack,
             isVideo = entries.getOrNull(pagerState.currentPage)?.type == MediaType.VIDEO,
             onShare = shareCurrent,
+            onDelete = if (viewModel.supportsWrite) {
+                { pendingDelete = entries.getOrNull(pagerState.currentPage) }
+            } else null,
             applyInsets = applyInsets,
             modifier = Modifier.fillMaxSize()
         ) { toggleOverlay ->
@@ -194,6 +217,27 @@ fun ViewerContent(
                 }
             }
         }
+
+        pendingDelete?.let { entry ->
+            AlertDialog(
+                onDismissRequest = { pendingDelete = null },
+                title = { Text("Delete") },
+                text = {
+                    Text("Delete \"${entry.name}\" from this archive? This can't be undone.")
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        pendingDelete = null
+                        viewModel.deleteFromArchive(listOf(entry.path))
+                    }) {
+                        Text("Delete")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
+                }
+            )
+        }
     }
 }
 
@@ -216,6 +260,8 @@ fun ViewerStage(
     onShare: () -> Unit,
     applyInsets: Boolean,
     modifier: Modifier = Modifier,
+    fileSize: Long? = null,
+    onDelete: (() -> Unit)? = null,
     media: @Composable (toggleOverlay: () -> Unit) -> Unit
 ) {
     var showUi by remember { mutableStateOf(true) }
@@ -225,12 +271,14 @@ fun ViewerStage(
         if (showUi) {
             ViewerOverlay(
                 fileName = fileName,
+                fileSize = fileSize,
                 page = page,
                 pageCount = pageCount,
                 showBack = showBack,
                 onBack = onBack,
                 isVideo = isVideo,
                 onShare = onShare,
+                onDelete = onDelete,
                 applyInsets = applyInsets,
                 modifier = Modifier.fillMaxSize()
             )
@@ -249,12 +297,14 @@ fun ViewerStage(
 @Composable
 fun ViewerOverlay(
     fileName: String?,
+    fileSize: Long?,
     page: Int,
     pageCount: Int,
     showBack: Boolean,
     onBack: (() -> Unit)?,
     isVideo: Boolean,
     onShare: () -> Unit,
+    onDelete: (() -> Unit)?,
     applyInsets: Boolean,
     modifier: Modifier = Modifier
 ) {
@@ -319,28 +369,59 @@ fun ViewerOverlay(
                 .semantics { contentDescription = "Page $page of $pageCount" }
         ) {
             Text(
-                text = "$page / $pageCount",
+                text = if (fileSize != null) {
+                    "$page / $pageCount · ${formatFileSize(fileSize)}"
+                } else {
+                    "$page / $pageCount"
+                },
                 style = MaterialTheme.typography.labelLarge,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
             )
         }
 
         if (isVideo) {
-            // For videos, keep share at the top so it never covers the
-            // player's bottom controller.
-            FilledTonalIconButton(
-                onClick = onShare,
-                colors = overlayColors,
+            // For videos, keep share + delete at the top so they never cover
+            // the player's bottom controller.
+            Row(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .then(topInset)
                     .padding(12.dp)
-                    .zIndex(10f)
-                    .semantics { contentDescription = "Share file" }
+                    .zIndex(10f),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(Icons.Outlined.Share, contentDescription = "Share")
+                if (onDelete != null) {
+                    FilledTonalIconButton(
+                        onClick = onDelete,
+                        colors = overlayColors,
+                        modifier = Modifier.semantics { contentDescription = "Delete file" }
+                    ) {
+                        Icon(Icons.Outlined.Delete, contentDescription = "Delete")
+                    }
+                }
+                FilledTonalIconButton(
+                    onClick = onShare,
+                    colors = overlayColors,
+                    modifier = Modifier.semantics { contentDescription = "Share file" }
+                ) {
+                    Icon(Icons.Outlined.Share, contentDescription = "Share")
+                }
             }
         } else {
+            if (onDelete != null) {
+                FilledTonalIconButton(
+                    onClick = onDelete,
+                    colors = overlayColors,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .then(topInset)
+                        .padding(12.dp)
+                        .zIndex(10f)
+                        .semantics { contentDescription = "Delete file" }
+                ) {
+                    Icon(Icons.Outlined.Delete, contentDescription = "Delete")
+                }
+            }
             ExtendedFloatingActionButton(
                 onClick = onShare,
                 containerColor = MaterialTheme.colorScheme.inverseSurface,

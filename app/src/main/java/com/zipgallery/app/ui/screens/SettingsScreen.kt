@@ -50,6 +50,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.zipgallery.app.model.AppThemeMode
+import com.zipgallery.app.util.formatFileSize
 import com.zipgallery.app.viewmodel.GalleryViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -70,7 +71,7 @@ fun SettingsScreen(
     LaunchedEffect(Unit) {
         cacheSizeBytes = withContext(Dispatchers.IO) { viewModel.cacheSize }
     }
-    val cacheSizeText = if (cacheSizeBytes < 0) "calculating..." else formatSize(cacheSizeBytes)
+    val cacheSizeText = if (cacheSizeBytes < 0) "calculating..." else formatFileSize(cacheSizeBytes)
 
     Scaffold(
         topBar = {
@@ -283,13 +284,5 @@ private fun ThemeOption(
             modifier = Modifier.weight(1f)
         )
         RadioButton(selected = selected, onClick = null)
-    }
-}
-
-private fun formatSize(bytes: Long): String {
-    return when {
-        bytes < 1024 -> "$bytes B"
-        bytes < 1024 * 1024 -> "${bytes / 1024} KB"
-        else -> "%.1f MB".format(bytes.toDouble() / (1024 * 1024))
     }
 }
