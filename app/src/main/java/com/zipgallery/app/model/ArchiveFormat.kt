@@ -4,7 +4,9 @@ import android.net.Uri
 import android.content.Context
 
 enum class ArchiveFormat(val extensions: Set<String>) {
-    ZIP(setOf("zip")),
+    // jar/apk/aab are ZIP containers and zip4j reads them natively — without
+    // them they'd fall through to the tar reader and fail to open.
+    ZIP(setOf("zip", "jar", "apk", "aab")),
     TAR(setOf("tar", "tar.gz", "tgz", "tar.bz2", "tar.xz", "gz", "bz2", "xz")),
     SEVEN_Z(setOf("7z")),
     UNKNOWN(emptySet());
@@ -28,7 +30,8 @@ enum class ArchiveFormat(val extensions: Set<String>) {
         fun mimeTypes(): Array<String> = arrayOf(
             "application/zip",
             "application/x-zip-compressed",
-            
+            "application/java-archive",
+            "application/vnd.android.package-archive",
             "application/x-7z-compressed",
             "application/x-tar",
             "application/gzip",

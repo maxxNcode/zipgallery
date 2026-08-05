@@ -13,6 +13,13 @@ class ArchiveFormatTest {
     }
 
     @Test
+    fun `fromFileName treats jar apk aab as ZIP containers`() {
+        assertEquals(ArchiveFormat.ZIP, ArchiveFormat.fromFileName("app.apk"))
+        assertEquals(ArchiveFormat.ZIP, ArchiveFormat.fromFileName("lib.jar"))
+        assertEquals(ArchiveFormat.ZIP, ArchiveFormat.fromFileName("bundle.aab"))
+    }
+
+    @Test
     fun `fromFileName returns UNKNOWN for RAR files`() {
         // RAR is not advertised or supported by any reader.
         assertEquals(ArchiveFormat.UNKNOWN, ArchiveFormat.fromFileName("data.rar"))
