@@ -26,6 +26,8 @@ class CommonsCompressReader : ArchiveReader {
             name.endsWith(".7z") -> readSevenZ(archiveFile, entries)
             name.endsWith(".tar") || name.endsWith(".tar.gz") || name.endsWith(".tgz") ||
                 name.endsWith(".tar.bz2") || name.endsWith(".tar.xz") -> readTar(archiveFile, entries)
+            name.endsWith(".gz") || name.endsWith(".bz2") || name.endsWith(".xz") ->
+                readSingleFile(archiveFile, entries)
             else -> throw ArchiveReadException("Unsupported format: $name")
         }
 
@@ -68,6 +70,8 @@ class CommonsCompressReader : ArchiveReader {
                     }
                 }
             }
+            // Plain single-file compression has no directory structure.
+            name.endsWith(".gz") || name.endsWith(".bz2") || name.endsWith(".xz") -> { }
             else -> throw ArchiveReadException("Unsupported format: $name")
         }
         folders.filter { it.isNotEmpty() }
@@ -85,6 +89,8 @@ class CommonsCompressReader : ArchiveReader {
             name.endsWith(".7z") -> extractSevenZ(archiveFile, entryPath, outFile)
             name.endsWith(".tar") || name.endsWith(".tar.gz") || name.endsWith(".tgz") ||
                 name.endsWith(".tar.bz2") || name.endsWith(".tar.xz") -> extractTar(archiveFile, entryPath, outFile)
+            name.endsWith(".gz") || name.endsWith(".bz2") || name.endsWith(".xz") ->
+                decompressTo(archiveFile, outputDir, entryPath)
             else -> throw ArchiveReadException("Unsupported format for extraction: $name")
         }
 
@@ -167,6 +173,12 @@ class CommonsCompressReader : ArchiveReader {
             name.endsWith(".7z") -> extractSevenZAll(archiveFile, wanted, outputDir, result)
             name.endsWith(".tar") || name.endsWith(".tar.gz") || name.endsWith(".tgz") ||
                 name.endsWith(".tar.bz2") || name.endsWith(".tar.xz") -> extractTarAll(archiveFile, wanted, outputDir, result)
+            name.endsWith(".gz") || name.endsWith(".bz2") || name.endsWith(".xz") -> {
+                val innerName = innerFileName(archiveFile)
+                if (innerName in wanted) {
+                    result[innerName] = decompressTo(archiveFile, outputDir, innerName)
+                }
+            }
             else -> throw ArchiveReadException("Unsupported format for extraction: $name")
         }
         result
@@ -219,6 +231,79 @@ class CommonsCompressReader : ArchiveReader {
                 entry = tin.nextEntry
             }
         }
+    }
+
+    /**
+     * A plain single-file .gz/.bz2/.xz (no tar container) exposes exactly one
+     * entry whose name is the archive name minus the compression extension
+     * ("photo.jpg.gz" -> "photo.jpg"). Uncompressed size isn't available
+     * without a full stream pass, so entries report 0.
+     */
+    private fun readSingleFile(archiveFile: File, entries: MutableList<MediaEntry>) {
+        val innerName = innerFileName(archiveFile)
+        val ext = innerName.substringAfterLast('.', "").lowercase()
+        val type = when {
+            ext in IMAGE_EXTS -> MediaType.IMAGE
+            ext in VIDEO_EXTS -> MediaType.VIDEO
+            else -> null
+        }
+        if (type != null) {
+            entries.add(
+                MediaEntry(
+                    name = innerName.substringAfterLast('/'),
+                    path = innerName,
+                    type = type,
+                    size = 0L
+                )
+            )
+        }
+    }
+
+    /** Entry path for a single-file archive: name minus the compression suffix. */
+    private fun innerFileName(archiveFile: File): String {
+        val name = archiveFile.name
+        return when {
+            name.endsWith(".gz") -> name.removeSuffix(".gz")
+            name.endsWith(".bz2") -> name.removeSuffix(".bz2")
+            name.endsWith(".xz") -> name.removeSuffix(".xz")
+            else -> name
+        }
+    }
+
+    /**
+     * Decompresses a plain single-file archive (gzip/bzip2/xz) to [outputDir]
+     * as [entryPath], using the .part + atomic rename pattern like every other
+     * extraction so readers never see a half-written file.
+     */
+    private fun decompressTo(archiveFile: File, outputDir: File, entryPath: String): File {
+        val safeName = sanitizeFileName(entryPath)
+        val outFile = File(outputDir, safeName)
+        if (outFile.exists()) return outFile
+        val part = File(outputDir, "$safeName.part${System.nanoTime()}")
+        try {
+            FileInputStream(archiveFile).use { fis ->
+                val buffered = BufferedInputStream(fis)
+                val decompressor = when {
+                    archiveFile.name.endsWith(".gz") -> GzipCompressorInputStream(buffered)
+                    archiveFile.name.endsWith(".bz2") -> BZip2CompressorInputStream(buffered)
+                    else -> XZCompressorInputStream(buffered)
+                }
+                decompressor.use { input ->
+                    FileOutputStream(part).use { os ->
+                        val buffer = ByteArray(8192)
+                        var len: Int
+                        while (input.read(buffer).also { len = it } != -1) {
+                            os.write(buffer, 0, len)
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            part.delete()
+            throw e
+        }
+        atomicFinish(part, outFile)
+        return outFile
     }
 
     /** Reads one already-positioned entry stream and writes it to disk. */
